@@ -38,11 +38,13 @@ paste the URL in chat if needed. Downside: needs our laptop online.
 
 ## Base URLs
 
-| Service | Local (A) | Live (B/C) |
+| Service | Local (Option A) | Public (live now) |
 |---|---|---|
-| API + Swagger `/docs` | `http://localhost:8000` | `<shared-base-url>` |
-| Health | `GET /` and `GET /converge/health` | same |
-| Besu QBFT RPC (chain 1338) | `http://localhost:9545` | same host, port 9545 |
+| API + Swagger `/docs` | `http://localhost:8000` | **`https://continuity.404piyush.me`** (SSL, Cloudflare Tunnel) |
+| Health | `GET /` and `GET /converge/health` | `https://continuity.404piyush.me/` |
+| Besu QBFT RPC (chain 1338) | `http://localhost:9545` | private (proofs served via API with tx hashes) |
+
+> Use the public URL — no setup needed on your side.
 
 Contract: `0xEf89440626EC6FCA59dfb164f42D027BfeC7c881` (lot roots, batch anchors, freeze flags).
 
@@ -51,7 +53,7 @@ Contract: `0xEf89440626EC6FCA59dfb164f42D027BfeC7c881` (lot roots, batch anchors
 All JSON. CORS open. No auth on demo endpoints (`X-API-KEY` accepted, not enforced).
 
 ```bash
-BASE=http://localhost:8000   # or the shared base URL
+BASE=https://continuity.404piyush.me   # live public API (or http://localhost:8000 via Option A)
 
 # 1. Verdict for a serial (drives your case creation)
 curl $BASE/products/SHOW-000001/verify
