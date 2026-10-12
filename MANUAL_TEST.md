@@ -1,5 +1,9 @@
 # Manual Test Guide — Trust Fabric backend
 
+> Start here instead: **TESTER_GUIDE_V2.md** (ordered pass, expected results,
+> done-status). This file remains the curl-level reference for §1–10; its
+> lots/red-team/convergence/UI notes are superseded by V2 where they overlap.
+
 Base: `http://localhost:8000` or `https://continuity.404piyush.me`.
 UI mirror: `http://localhost:3001/verify/<serial>`. All commands assume the demo
 seed is loaded (`POST /seed/demo` + `SHOW` lot + `POST /seed/tree` — see
