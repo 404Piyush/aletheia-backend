@@ -540,10 +540,44 @@ def blast_radius(lot_id: str):
         by_cust[(u["current_custodian"], u["status"])] = by_cust.get((u["current_custodian"], u["status"]), 0) + 1
     inv = c.execute("SELECT COUNT(*) n FROM unknown_attempts WHERE lot_id=?", (lot_id,)).fetchone()["n"]
     lot = c.execute("SELECT size FROM lots WHERE lot_id=?", (lot_id,)).fetchone()
+    # nested tree: pallets -> cases -> units (flat keys above unchanged)
+    conts = {r["id"]: dict(r) for r in
+             c.execute("SELECT id,type,parent_id FROM containers WHERE lot_id=?", (lot_id,)).fetchall()}
+    by_container: dict = {}
+    unassigned = []
+    for u in units:
+        node = {"serial": u["serial"], "status": u["status"],
+                "custodian": u["current_custodian"]}
+        if u["container_id"]:
+            by_container.setdefault(u["container_id"], []).append(node)
+        else:
+            unassigned.append(node)
+    tree = []
+    for cid, cm in conts.items():
+        if cm["type"] == "PALLET" or not cm["parent_id"]:
+            cases = [{"case_id": kid,
+                      "units": sorted(by_container.get(kid, []), key=lambda n: n["serial"])}
+                     for kid, kcm in conts.items() if kcm["parent_id"] == cid]
+            # pallet-level units (packed directly, no case)
+            direct = [n for n in by_container.get(cid, [])]
+            if direct:
+                cases.append({"case_id": None, "units": sorted(direct, key=lambda n: n["serial"])})
+            tree.append({"pallet_id": cid, "cases": cases})
+    # orphan cases (parent pallet missing) + unpacked units
+    orphans = [{"case_id": kid, "units": sorted(by_container.get(kid, []), key=lambda n: n["serial"])}
+               for kid, kcm in conts.items()
+               if kcm["type"] == "CASE" and kcm["parent_id"] not in conts]
+    if orphans or unassigned:
+        tree.append({"pallet_id": None,
+                     "cases": orphans + ([{"case_id": None,
+                                           "units": sorted(unassigned, key=lambda n: n["serial"])}]
+                                         if unassigned else [])})
     return {"lot": lot_id, "total_units": len(units), "by_status": by_status,
             "invented_attempts": inv, "produced": lot["size"] if lot else None,
             "overflow": bool(lot and inv > 0),
-            "by_custodian": [{"actor": a, "status": s, "units": n} for (a, s), n in by_cust.items()]}
+            "by_custodian": [{"actor": a, "status": s, "units": n} for (a, s), n in by_cust.items()],
+            "claimed_units": by_status.get("CLAIMED", 0),
+            "tree": tree}
 
 
 @app.get("/products/{serial}/anchor")
@@ -691,6 +725,64 @@ def seed_demo():
     c.commit()
     create_lot(LotIn(lot_id="LOT-DEMO-A", size=10, manufacturer="did:maker1"))
     return {"seeded": True, "signer": "ed25519 device-simulator holds demo keys"}
+
+
+@app.post("/seed/tree")
+def seed_tree():
+    """Phase 3: LOT-TREE (8 units) packed as pallet -> cases -> units with mixed
+    custodians. One unit SOLD+CLAIMED (recall must skip it), one SOLD, rest ACTIVE
+    across transporter/retailer. Re-runnable: resets the tree."""
+    c = con()
+    lot_id = "LOT-TREE"
+    mk, tp, rt = "did:maker1", "did:transporter1", "did:retailer1"
+    lot = create_lot(LotIn(lot_id=lot_id, size=8, manufacturer=mk))
+    serials = [f"{lot_id}-{i:06d}" for i in range(1, 9)]
+    secrets = lot.get("sample_secrets", {})
+
+    def _ev(serial, type, actor, to=None, ts=None):
+        return sign_event_api(EventIn(serial=serial, type=type, actor=actor,
+                                      to_actor=to, ts=ts))
+
+    base = int(time.time())
+
+    # C-T1 (in P-T1): 3 units to transporter; 000003 goes on to retailer->SOLD->CLAIMED
+    for i, s in enumerate(serials[:3]):
+        _ev(s, "HANDOVER_OFFER", mk, to=tp, ts=base + i * 10)
+        _ev(s, "HANDOVER_ACCEPT", tp, ts=base + i * 10 + 1)
+    s3 = serials[2]
+    _ev(s3, "HANDOVER_OFFER", tp, to=rt, ts=base + 100)
+    _ev(s3, "HANDOVER_ACCEPT", rt, ts=base + 101)
+    _ev(s3, "SOLD", rt, ts=base + 102)
+    sec3 = secrets.get(s3)
+    claim_out = None
+    if sec3:
+        claim_out = claim(s3, ClaimIn(secret=sec3, session_id="buyer1-session"))
+    # C-T2 (in P-T1): 000004 retailer->SOLD, 000005 stays ACTIVE at maker
+    s4, s5 = serials[3], serials[4]
+    _ev(s4, "HANDOVER_OFFER", mk, to=rt, ts=base + 200)
+    _ev(s4, "HANDOVER_ACCEPT", rt, ts=base + 201)
+    _ev(s4, "SOLD", rt, ts=base + 202)
+    # C-T3 (in P-T2): 3 units to retailer
+    for i, s in enumerate(serials[5:]):
+        _ev(s, "HANDOVER_OFFER", mk, to=rt, ts=base + 300 + i * 10)
+        _ev(s, "HANDOVER_ACCEPT", rt, ts=base + 300 + i * 10 + 1)
+
+    c.execute("INSERT OR REPLACE INTO containers(id,type,parent_id,lot_id) VALUES(?,?,?,?)",
+              ("P-T1", "PALLET", None, lot_id))
+    c.execute("INSERT OR REPLACE INTO containers(id,type,parent_id,lot_id) VALUES(?,?,?,?)",
+              ("P-T2", "PALLET", None, lot_id))
+    packing = {"C-T1": ("P-T1", serials[:3]), "C-T2": ("P-T1", serials[3:5]),
+               "C-T3": ("P-T2", serials[5:])}
+    for case, (pallet, units) in packing.items():
+        c.execute("INSERT OR REPLACE INTO containers(id,type,parent_id,lot_id) VALUES(?,?,?,?)",
+                  (case, "CASE", pallet, lot_id))
+        for s in units:
+            c.execute("UPDATE products SET container_id=? WHERE serial=?", (case, s))
+    c.commit()
+    return {"seeded": True, "lot_id": lot_id, "root": lot["root"], "tx": lot["tx"],
+            "packing": {k: v[1] for k, v in packing.items()},
+            "claimed": {"serial": s3, "result": claim_out},
+            "sold_unclaimed": s4}
 
 
 class SignIn(BaseModel):

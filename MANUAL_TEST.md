@@ -109,11 +109,26 @@ curl -X POST localhost:8000/converge/case \
 # -> CLONE_DETECTED payload delivered, or queued:true with reason
 ```
 
-## 12. Full suite
+## 12. Tree seed + recall split (Phase 3)
+
+```bash
+curl -s -X POST localhost:8000/seed/tree | python3 -m json.tool | head -20
+# -> seeded:true, C-T1 x3 (one CLAIMED), C-T2 x2 (one SOLD), C-T3 x3
+curl -s localhost:8000/lots/LOT-TREE/blast-radius | python3 -c \
+  "import json,sys; b=json.load(sys.stdin); print(b['by_status'], len(b['tree']), 'pallets')"
+# -> 6 ACTIVE / 1 SOLD / 1 CLAIMED, 2 pallets
+curl -s -X POST localhost:8000/lots/LOT-TREE/recall | python3 -c \
+  "import json,sys; print(json.load(sys.stdin)['by_status'])"
+# -> 7 FROZEN + 1 CLAIMED (recall skips claimed units). NOTE: this freezes
+#    LOT-TREE on the shared chain; unfreeze after the demo if you need it live:
+#    python3 -c "from backend import chain as ch; ch.freeze_lot('LOT-TREE', False)"
+```
+
+## 13. Full suite
 
 ```bash
 CHAIN_RPC=http://localhost:9545 python3 -m pytest tests/ -q
-# expect: 10 passed
+# expect: 11 passed
 ```
 
 ## Failure dictionary
