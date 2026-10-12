@@ -1,0 +1,11 @@
+# cloudflared tunnel for continuity.404piyush.me -> trust-fabric API :8000
+# 1. cloudflared tunnel login            (browser, pick 404piyush.me)
+# 2. cloudflared tunnel create trustfabric
+# 3. cloudflared tunnel route dns trustfabric continuity.404piyush.me
+# 4. Fill TUNNEL_ID below, then: cloudflared tunnel --config cloudflared/config.yml run
+tunnel: TUNNEL_ID
+credentials-file: /Users/piyushutkar/.cloudflared/TUNNEL_ID.json
+ingress:
+  - hostname: continuity.404piyush.me
+    service: http://localhost:8000
+  - service: http_status:404
