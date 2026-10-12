@@ -42,7 +42,38 @@ Suggested: `NEXT_PUBLIC_TRUSTFABRIC_API=https://continuity.404piyush.me`
 with `http://localhost:8000` fallback. In particular the `evidenceBundleUrl`
 you render should be the public URL so it opens from any machine.
 
-## 3. Confirm these (one-line replies)
+## 3. Your Spring properties must point at us (not defaults)
+
+`TrustFabricConvergenceService.java` reads our endpoints from properties —
+with defaults that only work single-machine / wrong chain:
+
+```properties
+trustfabric.base-url=https://continuity.404piyush.me
+# trustfabric.besu-url: do NOT use the :8545 default (wrong network).
+# Either http://localhost:9545 (chain 1338, same machine) or remove direct
+# Besu calls and use our POST /anchor/document + GET /bundle instead.
+```
+
+Same for the hardcoded `http://localhost:8000/products/LOT-A-000123/bundle`
+in your simulate flow (~lines 305, 327) — build it from `trustfabric.base-url`
+so links work from any machine.
+
+## 4. Single-laptop ports (don't move these, nothing clashes)
+
+| Port | Owner |
+|---|---|
+| 3000 | your Next.js |
+| 3001 | our TrustTrace UI |
+| 8000 | our FastAPI |
+| 8080 | your Spring Boot |
+| 8545 | other project — hands off |
+| 9545 | our Besu QBFT |
+
+Note: our `/redteam/*` attack endpoints are localhost-only by design, so your
+`simulate-clone` can't trigger them remotely — drive your own sim, then read
+our public `/verify` + `/bundle` for the evidence (that's the supported path).
+
+## 5. Confirm these (one-line replies)
 
 1. Project id: we send `apollo-core` (per your CONVERGENCE.md). Confirm.
 2. `POST /api/convergence/incidents` — is it live on your `:8080`? Our
@@ -60,5 +91,5 @@ you render should be the public URL so it opens from any machine.
 - Our `POST /converge/case` already emits your exact incident payload with the
   public bundle URL. Verified against your spec (test-pinned).
 
-Once 1–3 are done, joint flow is: our clone → your dossier + 3 recall tasks →
+Once 1–5 are done, joint flow is: our clone → your dossier + 3 recall tasks →
 gate blocks sign-off → force-accept passes → both audit trails match.
