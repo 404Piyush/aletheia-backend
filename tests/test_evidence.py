@@ -29,6 +29,10 @@ def _fresh_attack(monkeypatch, attack):
     r = client.post("/lots", json={"lot_id": "EVID-T", "size": 1,
                                    "manufacturer": "did:maker1"})
     assert r.status_code == 200, r.text
+    for i, did in enumerate(("did:maker1", "did:attacker", "did:attacker2")):
+        r = client.post("/actors", json={"did": did, "pubkey": "0x" + f"{i + 1:02x}" * 32,
+                                         "role": "demo"})
+        assert r.status_code == 200, r.text
     r = client.post(f"/redteam/{attack}")
     assert r.status_code == 200, r.text
     c = app_con()

@@ -35,6 +35,9 @@ def _wipe_and_seed():
     # wins at request time) and /redteam/* acts on LIMIT 1. Wipe the
     # product/event tables so the attacked serial is deterministically ours.
     # Later test modules create their own lots; nothing depends on these rows.
+    # Register the demo cast: R08 judges registry membership, not behavior,
+    # so the attacks must run as known (but misbehaving) actors — exactly
+    # like the live seed — or every verdict collapses to TAMPERED.
     c = app_con()
     try:
         for t in ("products", "events", "claims", "unknown_attempts"):
@@ -42,6 +45,10 @@ def _wipe_and_seed():
         c.commit()
     finally:
         c.close()
+    for i, did in enumerate(("did:maker1", "did:attacker", "did:attacker2")):
+        r = client.post("/actors", json={"did": did, "pubkey": "0x" + f"{i + 1:02x}" * 32,
+                                         "role": "demo"})
+        assert r.status_code == 200, r.text
     r = client.post("/lots", json={"lot_id": "REDTEAM-T", "size": 2,
                                    "manufacturer": "did:maker1"})
     assert r.status_code == 200, r.text
