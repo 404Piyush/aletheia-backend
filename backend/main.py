@@ -9,6 +9,7 @@ import time
 from contextvars import ContextVar
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .crypto import event_hash, sign_event, verify_event, GENESIS_PREV, to_hex
@@ -19,7 +20,19 @@ from .rules.engine import (r01_fork, r04_travel, r07_custody, score_and_confiden
                            verdict_for, Finding)
 
 app = FastAPI(title="Trust Fabric Chain API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 CUSTODY = ("MANUFACTURED", "HANDOVER_OFFER", "HANDOVER_ACCEPT", "SOLD")
+
+
+@app.get("/")
+def root():
+    return {"service": "trust-fabric", "docs": "/docs", "health": "/converge/health",
+            "chain": ch.chain_info()}
 
 
 _db_lock = threading.Lock()
