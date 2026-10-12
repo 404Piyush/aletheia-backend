@@ -501,8 +501,8 @@ def converge_case(body: ConvergeIn, request: Request):
     """Push current verdict+bundle to partner handoff platform (queues if down)."""
     from . import convergence as cv
     v = build_verdict(body.serial)
-    base = str(request.base_url).rstrip("/")
-    bundle_url = f"{base}/products/{body.serial}/bundle"
+    public = os.environ.get("PUBLIC_BASE", "https://continuity.404piyush.me").rstrip("/")
+    bundle_url = f"{public}/products/{body.serial}/bundle"
     return {"serial": body.serial, "verdict": v["verdict"],
             "risk_score": v["risk_score"], **cv.dispatch_case(body.serial, v, bundle_url)}
 
