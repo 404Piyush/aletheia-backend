@@ -311,7 +311,7 @@ def _unknown_flood(c, lot_id: str) -> bool:
 
 
 @app.post("/events/sign")
-def sign_event_api(e: EventIn):
+def sign_event_api(e: EventIn, skip_ts_bounds: bool = False):
     c = con()
     # --- input validation (reject absurd/forged fields before touching state)
     now = int(time.time())
@@ -322,7 +322,11 @@ def sign_event_api(e: EventIn):
     if len(e.biz_step) > 64:
         raise HTTPException(422, "biz_step too long")
     ts = e.ts or now
-    if not (0 < ts <= now + MAX_TS_SKEW_FUTURE):
+    # skip_ts_bounds is Python-internal only (never a request field): the
+    # localhost-gated redteam console must be able to stage attacks with
+    # future-dated scans (e.g. the clone button's travel pair). Public
+    # ingest always enforces the skew bound.
+    if not (0 < ts <= now + MAX_TS_SKEW_FUTURE) and not skip_ts_bounds:
         raise HTTPException(422, "ts out of range (must be <= now+5min)")
     if e.lat is not None and not (-90 <= e.lat <= 90):
         raise HTTPException(422, "lat out of range")
@@ -911,8 +915,8 @@ def redteam(attack: str, request: Request):
     base = int(time.time())
     if attack == "clone":
         sign_event_api(EventIn(serial=s, type="SCAN", actor="did:attacker", ts=base, lat=19.07, lon=72.87))
-        sign_event_api(EventIn(serial=s, type="HANDOVER_OFFER", actor="did:attacker", ts=base + 600, to_actor="did:attacker2"))
-        return sign_event_api(EventIn(serial=s, type="SCAN", actor="did:attacker2", ts=base + 1200, lat=28.61, lon=77.20))
+        sign_event_api(EventIn(serial=s, type="HANDOVER_OFFER", actor="did:attacker", ts=base + 600, to_actor="did:attacker2"), skip_ts_bounds=True)
+        return sign_event_api(EventIn(serial=s, type="SCAN", actor="did:attacker2", ts=base + 1200, lat=28.61, lon=77.20), skip_ts_bounds=True)
     if attack == "invented":
         out = []
         for i in range(5):
