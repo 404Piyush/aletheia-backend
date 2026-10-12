@@ -106,18 +106,42 @@ Demo serials that always exist after seeding: `SHOW-000001` (clean journey),
 | `did:transporter1` | `user-shruti` |
 | `did:retailer1` | `user-jessica` |
 
-## What we call on you (when your :8080 is up)
+## What we call on you (live: `https://converge.yugc.in`)
 
-- `POST /api/convergence/incidents` with `{serial, lotId, verdict, riskScore,
-  confidence, failedChecks[], evidenceBundleUrl}` + `X-User-Id`
-  (falls back to `POST /api/handoffs`)
+Set `PARTNER_BASE=https://converge.yugc.in` (`PARTNER_USER=user-yash`,
+`PARTNER_PROJECT=apollo-core`, `PUBLIC_BASE=https://continuity.404piyush.me`).
+
+- `POST /api/convergence/incidents` with `{caseId, serial, lotId, verdict,
+  riskScore, confidence, failedChecks[], checks[{id,status,reason}],
+  evidenceBundleUrl}` + `X-User-Id` (falls back to `POST /api/handoffs`).
+  `caseId` is ours (`TF-<serial>-<ts>`) so dispatches stay distinct cases.
+- Dispatch gating: only `CLONE_DETECTED`/`TAMPERED`/`SUSPICIOUS` are sent;
+  `VERIFIED` needs `{"force": true}`, `UNKNOWN` is always refused (`422`).
+  One dispatch per ~3s (`429` beyond). Response carries `caseId`,
+  `handoffId`, `incidentId` (+ partner `anchorTx`, recall tasks).
 - `GET /api/convergence/actor-map` — we sync your live DID roster
   (see `GET /converge/actor-map`, `source: live|static`)
 - `GET /api/convergence/status` — surfaced in our `GET /converge/health`
 - `GET /api/convergence/cases/{id}` — tracked per serial after dispatch
-  (see `GET /converge/status?serial=`)
+  (see `GET /converge/status?serial=`; we store `case_id` + `handoff_id` +
+  `incident_id` per serial)
 
-Send us: your base URL, one `projectId` (`apollo-core` assumed), and confirm the actor map.
+Your box answers in ~17s per call; our partner timeouts are 20–25s and
+partner-dependent endpoints run concurrently. If your box is down we queue
+to the outbox transcript instead of failing.
+
+## Live drill transcript (2026-10-12, against `converge.yugc.in`)
+
+`POST /converge/case {"serial":"LOT-DEMO-A-000001"}` → `CLONE_DETECTED` 65 →
+your `HO-2026-569` / `INC-LOT-DEMO-A-000001`, Besu anchor
+`0xb1b47e55…` (`ANC-BESU-1310542377`, block `0x1ce829`),
+`CASE_DISPATCHED_TO_CUSTODIANS`. Tracked at
+`GET /converge/status?serial=LOT-DEMO-A-000001` (stored `case_id`,
+`handoff_id`, `incident_id`). Re-run only on purpose — every dispatch
+creates a real handoff + anchor + recall tasks on your box.
+
+Send us: confirmation the actor map (§Actor map) still holds, and replies to
+PARTNER_CHANGES.md §6 (box outage, case-lookup key, latency).
 
 ## Troubleshooting
 

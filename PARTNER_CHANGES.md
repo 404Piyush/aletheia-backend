@@ -93,3 +93,31 @@ our public `/verify` + `/bundle` for the evidence (that's the supported path).
 
 Once 1–5 are done, joint flow is: our clone → your dossier + 3 recall tasks →
 gate blocks sign-off → force-accept passes → both audit trails match.
+
+## 6. Live-box update (2026-10-12 — your `https://converge.yugc.in` is up)
+
+Confirmed live and matching your PDF: incident ingest (drill `HO-2026-569` /
+`INC-LOT-DEMO-A-000001`, anchor `0xb1b47e55…`, block `0x1ce829` — full
+transcript in CONVERGE_CONNECT.md), actor-map envelope + roster (incl. the
+attacker→shared-userId rows), `cases/TC-1042` shape, `/api/health` → 200.
+§5.2/§5.3 are answered: incidents live, actor map confirmed as-is. We now
+send `caseId` (`TF-<serial>-<ts>`) + structured `checks[]` with every
+incident, and gate dispatch to real detections (`VERIFIED` needs explicit
+`force`, `UNKNOWN` refused). Our `PARTNER_BASE` points at yugc.in.
+
+Open items on your side:
+
+1. **URGENT — box is 530ing.** Since ~22:30 UTC every endpoint (`status`,
+   `actor-map`, `cases/*`, `handoffs`) returns Cloudflare 530 (origin
+   error). Nothing of ours changed — check whether Spring is down/OOM or
+   mid-redeploy, and tell us when it's back.
+2. **Latency ~17s per call** (measured across all endpoints while healthy).
+   Our timeouts now assume that (20–25s). If 17s isn't normal, investigate —
+   it's the joint demo's biggest timing risk (our dispatch holds ~40s).
+3. **Case-lookup key.** `GET /api/convergence/cases/{our-TF-caseId}` 530s;
+   is the canonical lookup your `TC-*` id, the `INC-*` id, or should our
+   `caseId` resolve? Tell us which id to track (we store all three).
+4. **`GET /api/handoffs`** 530s — does it still exist, and do list items
+   carry a `serial` field? Our status-tracker matches on it.
+5. `simulate-clone` + gate walkthrough: we will NOT fire it unilaterally —
+   say when, and we'll run the joint sequence (block → force-accept) together.
