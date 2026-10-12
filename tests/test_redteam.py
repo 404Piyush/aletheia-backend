@@ -99,3 +99,33 @@ def test_redteam_gate_needs_redteam_mode(monkeypatch):
     monkeypatch.delenv("REDTEAM_MODE", raising=False)
     r = client.post("/redteam/clone")
     assert r.status_code == 403, r.status_code
+
+
+def test_handover_button_fires_r07_only(monkeypatch):
+    monkeypatch.setenv("REDTEAM_MODE", "1")
+    _wipe_and_seed()
+    r = client.post("/redteam/handover")
+    assert r.status_code == 200, r.text
+    c = app_con()
+    try:
+        serial = c.execute("SELECT serial FROM products LIMIT 1").fetchone()["serial"]
+    finally:
+        c.close()
+    v = client.get(f"/products/{serial}/verify").json()
+    failed = {c["id"] for c in v["checks"] if c["status"] == "fail"}
+    assert "R07" in failed, failed
+    # Custody-break alone (no travel): SUSPICIOUS, not clone — API-level
+    # mirror of the two-signal doctrine pinned in test_rules.py.
+    assert v["verdict"] == "SUSPICIOUS", v
+
+
+def test_invented_button_banks_unknowns(monkeypatch):
+    monkeypatch.setenv("REDTEAM_MODE", "1")
+    _wipe_and_seed()
+    r = client.post("/redteam/invented")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["invented"]) == 5, body
+    assert all("rejected" in e for e in body["invented"]), body
+    v = client.get("/products/REDTEAM-T-FAKE0001/verify").json()
+    assert v["verdict"] == "UNKNOWN", v
