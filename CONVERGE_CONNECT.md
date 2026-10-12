@@ -46,7 +46,9 @@ paste the URL in chat if needed. Downside: needs our laptop online.
 
 > Use the public URL — no setup needed on your side.
 
-Contract: `0xEf89440626EC6FCA59dfb164f42D027BfeC7c881` (lot roots, batch anchors, freeze flags).
+Contract: redeployed on every cold restart — read the live address from `GET /`
+(`chain.contract`). Chain 1338, Besu QBFT on `:9545`, registrar stable
+`0x1848d8Ded316cA9c0F4F9Cc553d1E64f4d66e32F`.
 
 ## Endpoints you call
 
@@ -71,7 +73,10 @@ curl $BASE/products/SHOW-000001/anchor
 
 # 4. Recall scope (fan out your per-retailer tasks from this)
 curl $BASE/lots/SHOW/blast-radius
-# -> {total_units, by_status, by_custodian, invented_attempts, overflow}
+# -> {total_units, by_status, by_custodian, invented_attempts, overflow,
+#     claimed_units, tree:[{pallet_id, cases:[{case_id, units:[{serial,status,custodian}]}]}]}
+# Richest example: /lots/LOT-TREE/blast-radius (2 pallets, 3 cases, 8 units,
+# one SOLD, one CLAIMED — CLAIMED units survive recall)
 
 # 5. Anchor YOUR dossier hash on our chain (put returned tx in your audit log)
 curl -X POST $BASE/anchor/document -H 'Content-Type: application/json' \
@@ -80,7 +85,8 @@ curl -X POST $BASE/anchor/document -H 'Content-Type: application/json' \
 ```
 
 Demo serials that always exist after seeding: `SHOW-000001` (clean journey),
-`SHOW-000002` (sold), `LOT-DEMO-A-000001` (run `POST /redteam/clone` first to make it `CLONE_DETECTED`).
+`SHOW-000002` (sold), `LOT-DEMO-A-000001` (run `POST /redteam/clone` first to make it `CLONE_DETECTED`),
+`LOT-TREE-000003` (sold + claimed), `LOT-TREE-000004` (sold, unclaimed).
 
 ## Actor map (confirm or edit)
 
@@ -107,5 +113,5 @@ Send us: your base URL, one `projectId` (`apollo-core` assumed), and confirm the
 
 - `connection refused` → is `docker compose up` running? `curl localhost:8000/` should return `{"service":"trust-fabric",...}`.
 - Wrong verdicts → re-run the two seed commands above (chain is persistent, DB is not; registration is idempotent).
-- Chain check → `GET /` shows `chain:{mode:besu-qbft, chain_id:1338, block:<rising>, contract:0xEf89…}`.
+- Chain check → `GET /` shows `chain:{mode:besu-qbft, chain_id:1338, block:<rising>, contract:0x…}` (address changes per redeploy — never hardcode it).
 - Ports used: 8000 (API), 9545 (Besu). The `:8545` Besu on this machine belongs to another project — do not touch it.

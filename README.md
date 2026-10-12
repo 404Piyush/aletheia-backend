@@ -13,19 +13,23 @@ pytest tests/ -x -q
 ## Flow
 1. `POST /seed/demo` → demo actors
 2. `POST /lots {"lot_id":"LOT-A","size":20,"manufacturer":"did:maker1"}` → root+tx, sample secrets in response
-3. `POST /events/sign {"serial":"LOT-A-000001","type":"SCAN","actor":"did:transporter1","lat":19.07,"lon":72.87}`
-4. `GET /products/LOT-A-000001/verify` → `{verdict,risk_score,confidence,checks,proofs}`
-5. `POST /anchor/run` every ~10 events → on-chain root
-6. `GET /audit/integrity` → tamper check
-7. `GET /products/:s/bundle` → download + `python tools/verify_bundle.py bundle.json`
-8. `POST /products/:s/claim {"secret":"...","session_id":"..."}`
-9. `POST /lots/:id/recall` → freeze + blast-radius
-10. `POST /redteam/clone|invented|forge|handover|tamper` (REDTEAM_MODE=1, localhost only)
+3. `POST /seed/tree` → `LOT-TREE` packed as pallets → cases → units (mixed custodians, one SOLD, one CLAIMED)
+4. `POST /events/sign {"serial":"LOT-A-000001","type":"SCAN","actor":"did:transporter1","lat":19.07,"lon":72.87}`
+5. `GET /products/LOT-A-000001/verify` → `{verdict,risk_score,confidence,checks,proofs}`
+6. `POST /anchor/run` every ~10 events → on-chain root
+7. `GET /audit/integrity` → tamper check
+8. `GET /products/:s/bundle` → download + `python tools/verify_bundle.py bundle.json`
+9. `POST /products/:s/claim {"secret":"...","session_id":"..."}`
+10. `POST /lots/:id/recall` → freeze + blast-radius (CLAIMED units survive the freeze)
+11. `POST /redteam/clone|invented|forge|handover|tamper` (REDTEAM_MODE=1, localhost only)
+
+Testers: `MANUAL_TEST.md` (step-by-step) + `TESTERS_CHECKLIST.md` (10-min pass/fail sheet).
+Live demo state: `docs/LIVE_STATE.md`.
 
 ## APIs for UI person
 - `GET /products/{serial}/verify` and `GET /anomaly/{serial}`: verdict object
 - `GET /products/{serial}/bundle`: full evidence
-- `GET /lots/{id}/blast-radius`: recall tree counts
+- `GET /lots/{id}/blast-radius`: nested recall tree (pallets → cases → units with status/custodian) + flat counts + `claimed_units`
 - `POST /anchor/document {"doc_hash"}` with `X-API-KEY`: generic anchor for partner
 
 ## Convergence (CONTINUITY handoff platform, :8080)

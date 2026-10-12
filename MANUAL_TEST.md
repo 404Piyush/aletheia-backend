@@ -2,15 +2,23 @@
 
 Base: `http://localhost:8000` or `https://continuity.404piyush.me`.
 UI mirror: `http://localhost:3001/verify/<serial>`. All commands assume the demo
-seed is loaded (`POST /seed/demo` + `SHOW` lot — see `scripts/reset_demo.sh`
-for a full reset).
+seed is loaded (`POST /seed/demo` + `SHOW` lot + `POST /seed/tree` — see
+`scripts/reset_demo.sh` for a full reset).
+
+Order matters: §9 and §12 **recall (freeze) live lots**. Run them last, or
+unfreeze after (`python3 -c "from backend import chain as ch;
+ch.freeze_lot('<LOT>', False)"`). Re-running `POST /lots` for an existing lot
+resets its units (new secrets) — re-capture `sample_secrets`.
+
+Live chain facts (read, don't assume): `GET /` shows the current contract
+address (it changes on every redeploy), chain 1338, rising block height.
 
 ## 1. Health + chain
 
 ```bash
 curl localhost:8000/health
 # -> {"status":"ok","events":N,"open_incidents":M,"chain":{"mode":"besu-qbft",
-#     "chain_id":1338,"block":<rising>,"contract":"0xEf89…"}}
+#     "chain_id":1338,"block":<rising>,"contract":"0x…"}}
 ```
 
 Pass = `status ok`, block height rises between calls.
@@ -68,18 +76,25 @@ Send the identical SCAN twice (same `ts`):
 
 ## 8. Consumer claim lifecycle
 
-Lot `CLAIM` (secret from lot-creation response, `sample_secrets`):
+Create a throwaway lot first (a reset wipes it; capture the fresh secret):
 
 ```bash
+curl -s -X POST localhost:8000/lots -H 'Content-Type: application/json' \
+  -d '{"lot_id":"CLAIM","size":3,"manufacturer":"did:maker1"}' \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['sample_secrets'])"
+# -> {"CLAIM-000001": "<SECRET>", ...} — save <SECRET>
 curl -X POST localhost:8000/events/sign -H 'Content-Type: application/json' -d '{
   "serial":"CLAIM-000001","type":"SOLD","actor":"did:retailer1"}'
 curl -X POST localhost:8000/products/CLAIM-000001/claim \
-  -H 'Content-Type: application/json' -d '{"secret":"<hex>","session_id":"buyer-1"}'
+  -H 'Content-Type: application/json' -d '{"secret":"<SECRET>","session_id":"buyer-1"}'
 # -> CLAIMED. Same session again -> idempotent CLAIMED.
 # Different session -> R12 contested. 6th wrong secret in 10 min -> 429.
 ```
 
 ## 9. Tamper + recall
+
+⚠️ Freezes the `SHOW` lot on the shared chain — run last or unfreeze after
+(see header). Prefer §12's `LOT-TREE` recall if `SHOW` must stay writable.
 
 ```bash
 curl -X POST localhost:8000/redteam/tamper
@@ -88,7 +103,10 @@ curl localhost:8000/audit/integrity
 curl -X POST localhost:8000/lots/SHOW/recall
 # -> on-chain freeze; further writes to SHOW lots -> 423
 curl localhost:8000/lots/SHOW/blast-radius
-# -> counts by status/custodian + invented_attempts/overflow flags
+# -> by_status/by_custodian counts + invented_attempts/overflow + nested
+#    tree (pallets -> cases -> units) + claimed_units
+# unfreeze when done:
+python3 -c "from backend import chain as ch; ch.freeze_lot('SHOW', False)"
 ```
 
 ## 10. Proof without trusting the backend

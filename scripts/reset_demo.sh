@@ -61,11 +61,13 @@ curl -s -m 20 -X POST localhost:8000/events/sign -H 'Content-Type: application/j
   -d '{"serial":"SHOW-000001","type":"HANDOVER_ACCEPT","actor":"did:transporter1","lat":19.10,"lon":72.90}' >/dev/null
 curl -s -m 20 -X POST localhost:8000/events/sign -H 'Content-Type: application/json' \
   -d '{"serial":"SHOW-000002","type":"SOLD","actor":"did:retailer1"}' >/dev/null
+curl -s -m 60 -X POST localhost:8000/seed/tree | python3 -c "import json,sys; d=json.load(sys.stdin); print('TREE:', d['lot_id'], d['packing'], d['claimed']['result'])"
 curl -s -m 20 -X POST localhost:8000/redteam/clone >/dev/null
 curl -s -m 30 -X POST localhost:8000/anchor/run | python3 -c "import json,sys; d=json.load(sys.stdin); print('anchor:', d.get('tx'), 'id', d.get('anchor_id'))"
 
 echo "== verify =="
 curl -s -m 15 localhost:8000/products/SHOW-000001/verify | python3 -c "import json,sys; v=json.load(sys.stdin); print('SHOW-000001:', v['verdict'], v['risk_score'])"
 curl -s -m 15 localhost:8000/products/LOT-DEMO-A-000001/verify | python3 -c "import json,sys; v=json.load(sys.stdin); print('DEMO clone:', v['verdict'], v['risk_score'])"
+curl -s -m 15 localhost:8000/lots/LOT-TREE/blast-radius | python3 -c "import json,sys; b=json.load(sys.stdin); print('TREE:', b['by_status'], len(b['tree']), 'pallets')"
 curl -s -m 15 localhost:8000/converge/health | python3 -c "import json,sys; h=json.load(sys.stdin); print('health ok, map:', h['actor_map_source'])"
 echo DONE

@@ -14,8 +14,8 @@ That is **not our chain** — something else on this machine owns `:8545`.
 Our chain:
 
 - RPC `http://localhost:9545`, Chain ID **1338**
-- Contract `0xEf89440626EC6FCA59dfb164f42D027BfeC7c881`
-- Registrar `0x1848d8Ded316cA9c0F4F9Cc553d1E64f4d66e32F`
+- Contract: redeployed per cold restart — read live from our `GET /`
+  (`chain.contract`); registrar stable `0x1848d8Ded316cA9c0F4F9Cc553d1E64f4d66e32F`
 
 Any `simulate-clone` / anchor call you send to `:8545` will fail or land on the
 wrong ledger. Two options, pick one:
