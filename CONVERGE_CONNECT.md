@@ -92,10 +92,16 @@ Demo serials that always exist after seeding: `SHOW-000001` (clean journey),
 
 ## What we call on you (when your :8080 is up)
 
-- `POST /api/handoffs` with `{projectId, recipientId, note, executiveSummary, nextSteps, criticalBlockers}` + `X-User-Id`
-- `GET /api/handoffs` to poll owner/ack state
+- `POST /api/convergence/incidents` with `{serial, lotId, verdict, riskScore,
+  confidence, failedChecks[], evidenceBundleUrl}` + `X-User-Id`
+  (falls back to `POST /api/handoffs`)
+- `GET /api/convergence/actor-map` — we sync your live DID roster
+  (see `GET /converge/actor-map`, `source: live|static`)
+- `GET /api/convergence/status` — surfaced in our `GET /converge/health`
+- `GET /api/convergence/cases/{id}` — tracked per serial after dispatch
+  (see `GET /converge/status?serial=`)
 
-Send us: your base URL, one `projectId`, and confirm the actor map.
+Send us: your base URL, one `projectId` (`apollo-core` assumed), and confirm the actor map.
 
 ## Troubleshooting
 

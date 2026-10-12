@@ -503,21 +503,51 @@ def converge_case(body: ConvergeIn, request: Request):
     v = build_verdict(body.serial)
     public = os.environ.get("PUBLIC_BASE", "https://continuity.404piyush.me").rstrip("/")
     bundle_url = f"{public}/products/{body.serial}/bundle"
+    out = cv.dispatch_case(body.serial, v, bundle_url)
+    if out.get("ok"):
+        try:
+            p = out.get("partner", {})
+            cid = (p.get("id") or p.get("caseId") or p.get("handoffId")
+                   if isinstance(p, dict) else None)
+            c = con()
+            c.execute("INSERT OR REPLACE INTO converge_cases(serial,case_id,ts,last_status) VALUES(?,?,?,?)",
+                      (body.serial, str(cid or ""), int(time.time()), "open"))
+            c.commit()
+        except Exception:
+            pass
     return {"serial": body.serial, "verdict": v["verdict"],
-            "risk_score": v["risk_score"], **cv.dispatch_case(body.serial, v, bundle_url)}
+            "risk_score": v["risk_score"], **out}
 
 
 @app.get("/converge/status")
 def converge_status(serial: str):
     from . import convergence as cv
-    return {"serial": serial, **cv.case_status(serial)}
+    try:
+        c = con()
+        row = c.execute("SELECT case_id, last_status FROM converge_cases WHERE serial=?",
+                        (serial,)).fetchone()
+    except Exception:
+        row = None
+    live = None
+    if row and row["case_id"]:
+        live = cv.case_detail(row["case_id"])
+    return {"serial": serial, "tracked": dict(row) if row else None,
+            "live": live, **cv.case_status(serial)}
 
 
 @app.get("/converge/health")
 def converge_health():
     from . import convergence as cv
-    return {"partner_up": cv.partner_up(), "partner_base": cv.PARTNER_BASE,
-            "project": cv.PARTNER_PROJECT, "actor_map": cv.ACTOR_MAP}
+    m = cv.fetch_actor_map()
+    return {"partner_up": cv.partner_up(), "bridge": cv.bridge_status(),
+            "partner_base": cv.PARTNER_BASE, "project": cv.PARTNER_PROJECT,
+            "actor_map_source": m["source"], "actor_map": m["map"]}
+
+
+@app.get("/converge/actor-map")
+def converge_actor_map():
+    from . import convergence as cv
+    return cv.fetch_actor_map()
 
 
 # ---------- redteam (localhost only) ----------

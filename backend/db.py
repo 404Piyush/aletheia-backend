@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS incidents(
 CREATE TABLE IF NOT EXISTS batches(
   id INTEGER PRIMARY KEY AUTOINCREMENT, root TEXT, count INTEGER, tx TEXT, ts INTEGER
 );
+CREATE TABLE IF NOT EXISTS converge_cases(
+  serial TEXT PRIMARY KEY, case_id TEXT, ts INTEGER, last_status TEXT
+);
 """
 
 

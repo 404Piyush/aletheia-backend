@@ -5,6 +5,8 @@ import json
 import os
 import time
 
+import httpx
+
 PARTNER_BASE = os.environ.get("PARTNER_BASE", "http://localhost:8080")
 PARTNER_USER = os.environ.get("PARTNER_USER", "user-yash")
 PARTNER_PROJECT = os.environ.get("PARTNER_PROJECT", "apollo-core")
@@ -20,11 +22,38 @@ except FileNotFoundError:
 
 def partner_up(timeout: float = 3.0) -> bool:
     try:
-        import httpx
         r = httpx.get(f"{PARTNER_BASE}/api/health", timeout=timeout)
         return r.status_code < 500
     except Exception:
         return False
+
+
+def bridge_status(timeout: float = 5.0) -> dict:
+    """His bridge health: GET /api/convergence/status."""
+    try:
+        r = httpx.get(f"{PARTNER_BASE}/api/convergence/status", timeout=timeout)
+        return {"reachable": True, "status": r.status_code, "body": r.json()
+                if "json" in r.headers.get("content-type", "") else r.text[:300]}
+    except Exception as e:
+        return {"reachable": False, "reason": f"{type(e).__name__}"}
+
+
+def fetch_actor_map(timeout: float = 5.0) -> dict:
+    """Live roster: GET /api/convergence/actor-map -> {did: userId}. Falls back to file."""
+    try:
+        r = httpx.get(f"{PARTNER_BASE}/api/convergence/actor-map", timeout=timeout)
+        if r.status_code == 200:
+            actors = r.json().get("actors", r.json() if isinstance(r.json(), list) else [])
+            live = {a["did"]: a.get("userId", a.get("user_id", "")) for a in actors if "did" in a}
+            if live:
+                return {"source": "live", "map": live}
+    except Exception:
+        pass
+    return {"source": "static", "map": dict(ACTOR_MAP)}
+
+
+def live_map() -> dict:
+    return fetch_actor_map().get("map", dict(ACTOR_MAP))
 
 
 def _queue(payload: dict, reason: str) -> dict:
@@ -52,7 +81,7 @@ def build_incident_payload(serial: str, verdict: dict, bundle_url: str) -> dict:
 
 def build_case_payload(serial: str, verdict: dict, bundle_url: str) -> dict:
     """Legacy fallback: POST /api/handoffs."""
-    recipient = ACTOR_MAP.get("did:retailer1", "user-jessica")
+    recipient = live_map().get("did:retailer1", "user-jessica")
     reasons = "; ".join(c.get("reason", c.get("id", "")) for c in verdict.get("checks", [])
                         if c.get("status") == "fail")[:500]
     return {
@@ -74,7 +103,6 @@ def build_case_payload(serial: str, verdict: dict, bundle_url: str) -> dict:
 def dispatch_case(serial: str, verdict: dict, bundle_url: str) -> dict:
     incident = build_incident_payload(serial, verdict, bundle_url)
     try:
-        import httpx
         r = httpx.post(f"{PARTNER_BASE}/api/convergence/incidents", json=incident,
                        headers={"Content-Type": "application/json", "X-User-Id": PARTNER_USER},
                        timeout=8.0)
@@ -84,7 +112,6 @@ def dispatch_case(serial: str, verdict: dict, bundle_url: str) -> dict:
         pass
     payload = build_case_payload(serial, verdict, bundle_url)
     try:
-        import httpx
         r = httpx.post(f"{PARTNER_BASE}/api/handoffs", json=payload,
                        headers={"Content-Type": "application/json", "X-User-Id": PARTNER_USER},
                        timeout=8.0)
@@ -95,9 +122,19 @@ def dispatch_case(serial: str, verdict: dict, bundle_url: str) -> dict:
         return _queue(incident, f"partner unreachable: {type(e).__name__}")
 
 
+def case_detail(case_id: str, timeout: float = 5.0) -> dict | None:
+    """His case state: GET /api/convergence/cases/{id}."""
+    try:
+        r = httpx.get(f"{PARTNER_BASE}/api/convergence/cases/{case_id}", timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+
 def case_status(serial: str) -> dict:
     try:
-        import httpx
         r = httpx.get(f"{PARTNER_BASE}/api/handoffs", timeout=8.0)
         if r.status_code != 200:
             return {"ok": False, "reason": f"partner HTTP {r.status_code}"}

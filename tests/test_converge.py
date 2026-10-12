@@ -29,6 +29,30 @@ def test_incident_payload_matches_partner_schema():
                  "evidenceBundleUrl": "https://continuity.404piyush.me/x"}
 
 
+def test_actor_map_falls_back_to_static(monkeypatch):
+    import backend.convergence as cv
+    def boom(url, timeout=5.0):
+        raise ConnectionError("down")
+    monkeypatch.setattr(cv.httpx, "get", boom)
+    out = cv.fetch_actor_map()
+    assert out["source"] == "static"
+    assert out["map"]["did:maker1"] == "user-yash"
+
+
+def test_actor_map_parses_live_roster(monkeypatch):
+    import backend.convergence as cv
+    class R:
+        status_code = 200
+        def json(self):
+            return {"status": "CONFIRMED", "project": "apollo-core", "actors": [
+                {"did": "did:maker1", "userId": "user-yash"},
+                {"did": "did:retailer1", "userId": "user-jessica"}]}
+    monkeypatch.setattr(cv.httpx, "get", lambda url, timeout=5.0: R())
+    out = cv.fetch_actor_map()
+    assert out["source"] == "live"
+    assert out["map"] == {"did:maker1": "user-yash", "did:retailer1": "user-jessica"}
+
+
 def test_dispatch_queues_when_partner_down(monkeypatch):
     monkeypatch.setenv("PARTNER_BASE", "http://127.0.0.1:9")
     monkeypatch.setenv("CONVERGE_OUTBOX", "/tmp/test_outbox.jsonl")
