@@ -66,3 +66,36 @@ def test_unknown_attack_is_rejected(monkeypatch):
     _wipe_and_seed()
     r = client.post("/redteam/rm -rf")
     assert r.status_code in (400, 404, 422), r.status_code
+
+
+def test_forge_button_rejects_wrong_key(monkeypatch):
+    _enable_redteam(monkeypatch)
+    _wipe_and_seed()
+    r = client.post("/redteam/forge")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["rule"] == "R08/R09", body
+    assert body["code"] in (400, 401, 422), body
+    assert body["rejected"], body
+
+
+def test_forge_leaves_no_trace(monkeypatch):
+    _enable_redteam(monkeypatch)
+    _wipe_and_seed()
+    client.post("/redteam/forge")
+    serial = _attacked_serial()
+    assert serial.startswith("REDTEAM-T-"), serial
+    v = client.get(f"/products/{serial}/verify").json()
+    # Rejected forgery never entered history: unit stays clean.
+    assert v["verdict"] == "VERIFIED", v
+    bundle = client.get(f"/products/{serial}/bundle").json()
+    actors = {e.get("actor") for e in bundle.get("events", [])}
+    assert "did:transporter1" not in actors, actors
+
+
+def test_redteam_gate_needs_redteam_mode(monkeypatch):
+    _enable_redteam(monkeypatch)
+    _wipe_and_seed()
+    monkeypatch.delenv("REDTEAM_MODE", raising=False)
+    r = client.post("/redteam/clone")
+    assert r.status_code == 403, r.status_code
