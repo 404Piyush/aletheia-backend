@@ -169,3 +169,27 @@ def test_hint_buttons_point_at_claim_flow(monkeypatch):
         r = client.post(f"/redteam/{attack}")
         assert r.status_code == 200, r.text
         assert "claim" in r.json()["hint"], r.text
+
+
+def test_detection_surface_matrix(monkeypatch):
+    """One matrix locking every attack button's full verdict signature.
+    R14 (device binding) is intentionally absent: no device identity exists
+    in the event model, and inventing a heuristic would false-positive on
+    legitimate key rotation. It stays spec-listed but unimplemented."""
+    monkeypatch.setenv("REDTEAM_MODE", "1")
+    matrix = {
+        # attack: (verdict, score, failed-ids subset)
+        "clone": ("CLONE_DETECTED", 65, {"R04", "R07"}),
+        "handover": ("SUSPICIOUS", 25, {"R07"}),
+        "tamper": ("TAMPERED", 40, {"R09"}),
+    }
+    for attack, (verdict, score, failed_ids) in matrix.items():
+        _wipe_and_seed()
+        r = client.post(f"/redteam/{attack}")
+        assert r.status_code == 200, (attack, r.text)
+        serial = _attacked_serial()
+        v = client.get(f"/products/{serial}/verify").json()
+        failed = {c["id"] for c in v["checks"] if c["status"] == "fail"}
+        assert v["verdict"] == verdict, (attack, v)
+        assert v["risk_score"] == score, (attack, v)
+        assert failed_ids <= failed, (attack, failed)
