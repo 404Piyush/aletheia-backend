@@ -492,6 +492,25 @@ def build_verdict(serial: str):
                                     [a.get("event_hash", ""), b.get("event_hash", "")],
                                     "Inspect seal; possible cloned tag"))
             break
+    # R05 quantity overflow (more units enrolled than the lot committed)
+    if prod:
+        lot = c.execute("SELECT size FROM lots WHERE lot_id=?", (prod["lot_id"],)).fetchone()
+        if lot:
+            n = c.execute("SELECT COUNT(*) n FROM products WHERE lot_id=?",
+                          (prod["lot_id"],)).fetchone()["n"]
+            if n > lot["size"]:
+                findings.append(Finding("R05", "critical",
+                                        f"Lot overproduced: {n} units vs {lot['size']} committed",
+                                        [serial], "Audit lot enrolment vs committed size"))
+    # R06 route order (backdated custody step suggests a reordered route)
+    prev_ts = None
+    for e in sorted(custody, key=lambda x: (x["seq"] if x.get("seq") is not None else 10**9)):
+        if prev_ts is not None and e["ts"] < prev_ts:
+            findings.append(Finding("R06", "medium",
+                                    f"Custody step out of order: ts {e['ts']} before {prev_ts}",
+                                    [e.get("event_hash", "")], "Verify event log ordering"))
+            break
+        prev_ts = e["ts"]
     # R08 revoked/unregistered actor (consult actors table; unknown key = unregistered)
     known = {r["pubkey"] for r in c.execute("SELECT pubkey FROM actors WHERE active=1").fetchall()}
     known_dids = {r["did"] for r in c.execute("SELECT did FROM actors WHERE active=1").fetchall()}

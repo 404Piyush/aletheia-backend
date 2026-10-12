@@ -33,6 +33,10 @@ def _fresh():
     r = client.post("/actors", json={"did": "did:maker1", "pubkey": "0x" + "aa" * 32,
                                      "role": "demo"})
     assert r.status_code == 200, r.text
+    for i, did in enumerate(("did:transporter1", "did:retailer1")):
+        r = client.post("/actors", json={"did": did, "pubkey": "0x" + f"{i + 2:02x}" * 32,
+                                         "role": "demo"})
+        assert r.status_code == 200, r.text
     r = client.post("/lots", json={"lot_id": "LIFE-T", "size": 1,
                                    "manufacturer": "did:maker1"})
     assert r.status_code == 200, r.text
@@ -95,3 +99,37 @@ def test_counter_bounds_rejected():
     r = client.post("/events/sign", json={"serial": "LIFE-T-000001", "type": "SCAN",
                                           "actor": "did:maker1", "counter": -1})
     assert r.status_code == 422, r.status_code
+
+
+def test_r05_overproduction_is_clone():
+    _fresh()
+    c = app_con()
+    try:
+        c.execute("INSERT INTO products(serial,lot_id,status,current_custodian) VALUES(?,?,?,?)",
+                  ("LIFE-T-GHOST", "LIFE-T", "ACTIVE", "did:maker1"))
+        c.commit()
+    finally:
+        c.close()
+    v = _verify()
+    assert "R05" in _failed(v), _failed(v)
+    assert v["verdict"] == "CLONE_DETECTED", v
+
+
+def test_r05_exact_size_is_silent():
+    _fresh()
+    v = _verify()
+    assert "R05" not in _failed(v), _failed(v)
+
+
+def test_r06_backdated_custody_step():
+    import time as _time
+    _fresh()
+    base = int(_time.time()) - 300
+    client.post("/events/sign", json={"serial": "LIFE-T-000001", "type": "HANDOVER_OFFER",
+                                      "actor": "did:maker1", "to_actor": "did:transporter1",
+                                      "ts": base})
+    client.post("/events/sign", json={"serial": "LIFE-T-000001", "type": "HANDOVER_ACCEPT",
+                                      "actor": "did:transporter1", "ts": base - 60})
+    v = _verify()
+    assert "R06" in _failed(v), _failed(v)
+    assert v["verdict"] == "SUSPICIOUS", v
