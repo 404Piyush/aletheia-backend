@@ -171,6 +171,43 @@ def register_actor(a: ActorIn):
 
 
 # ---------- lots ----------
+@app.get("/lots")
+def list_lots():
+    """Inventory for the UI tower: every lot with live unit counts + freeze flag."""
+    c = con()
+    out = []
+    for lot in c.execute("SELECT lot_id,gtin,size,root,tx,frozen FROM lots ORDER BY lot_id").fetchall():
+        by_status: dict = {}
+        n = 0
+        for u in c.execute("SELECT status FROM products WHERE lot_id=?", (lot["lot_id"],)).fetchall():
+            by_status[u["status"]] = by_status.get(u["status"], 0) + 1
+            n += 1
+        out.append({"lot_id": lot["lot_id"], "gtin": lot["gtin"], "size": lot["size"],
+                    "root": lot["root"], "tx": lot["tx"], "frozen": bool(lot["frozen"]),
+                    "units": n, "by_status": by_status})
+    return {"lots": out}
+
+
+@app.get("/lots/{lot_id}")
+def lot_detail_api(lot_id: str):
+    """Single-lot detail for the UI tower (units, custodians, anchor, freeze flag)."""
+    if len(lot_id) > 128:
+        raise HTTPException(422, "lot id too long (<=128 chars)")
+    c = con()
+    lot = c.execute("SELECT lot_id,gtin,size,root,tx,frozen FROM lots WHERE lot_id=?",
+                    (lot_id,)).fetchone()
+    if not lot:
+        raise HTTPException(404, "unknown lot")
+    units = [{"serial": u["serial"], "status": u["status"],
+              "custodian": u["current_custodian"]}
+             for u in c.execute("SELECT serial,status,current_custodian FROM products WHERE lot_id=? ORDER BY serial",
+                                (lot_id,)).fetchall()]
+    custodians = sorted({u["custodian"] for u in units if u["custodian"]})
+    return {"lot_id": lot["lot_id"], "gtin": lot["gtin"], "size": lot["size"],
+            "root": lot["root"], "tx": lot["tx"], "frozen": bool(lot["frozen"]),
+            "units": units, "custodians": custodians}
+
+
 @app.post("/lots")
 def create_lot(lot: LotIn):
     c = con()
