@@ -28,6 +28,12 @@ pytest tests/ -x -q
 - `GET /lots/{id}/blast-radius`: recall tree counts
 - `POST /anchor/document {"doc_hash"}` with `X-API-KEY`: generic anchor for partner
 
+## Convergence (CONTINUITY handoff platform, :8080)
+- `GET /converge/health`: partner reachability + actor map
+- `POST /converge/case {"serial"}`: push verdict+bundle as handoff dossier (queues to `converge_outbox.jsonl` if partner down, delivers when up)
+- `GET /converge/status?serial=`: poll partner handoffs for this serial
+- Actor map: `backend/converge_map.json` (`did:*` → `user-*`). Env: `PARTNER_BASE`, `PARTNER_USER`, `PARTNER_PROJECT`
+
 ## On-chain vs off-chain
 ON: lot roots+qty, batch roots, freeze, revocation. OFF: events, sensors, secrets, claims, docs.
 `contracts/ProvenanceRegistry.sol` is the same contract for Besu local and Amoy/Base Sepolia.

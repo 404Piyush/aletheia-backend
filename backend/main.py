@@ -453,6 +453,34 @@ def anchor_doc(body: dict, x_api_key: str | None = Header(default=None)):
     return {"anchor_id": aid, "tx": tx}
 
 
+class ConvergeIn(BaseModel):
+    serial: str
+
+
+@app.post("/converge/case")
+def converge_case(body: ConvergeIn, request: Request):
+    """Push current verdict+bundle to partner handoff platform (queues if down)."""
+    from . import convergence as cv
+    v = build_verdict(body.serial)
+    base = str(request.base_url).rstrip("/")
+    bundle_url = f"{base}/products/{body.serial}/bundle"
+    return {"serial": body.serial, "verdict": v["verdict"],
+            "risk_score": v["risk_score"], **cv.dispatch_case(body.serial, v, bundle_url)}
+
+
+@app.get("/converge/status")
+def converge_status(serial: str):
+    from . import convergence as cv
+    return {"serial": serial, **cv.case_status(serial)}
+
+
+@app.get("/converge/health")
+def converge_health():
+    from . import convergence as cv
+    return {"partner_up": cv.partner_up(), "partner_base": cv.PARTNER_BASE,
+            "project": cv.PARTNER_PROJECT, "actor_map": cv.ACTOR_MAP}
+
+
 # ---------- redteam (localhost only) ----------
 @app.post("/redteam/{attack}")
 def redteam(attack: str):
