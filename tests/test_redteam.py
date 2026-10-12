@@ -129,3 +129,28 @@ def test_invented_button_banks_unknowns(monkeypatch):
     assert all("rejected" in e for e in body["invented"]), body
     v = client.get("/products/REDTEAM-T-FAKE0001/verify").json()
     assert v["verdict"] == "UNKNOWN", v
+
+
+def test_tamper_button_breaks_integrity(monkeypatch):
+    monkeypatch.setenv("REDTEAM_MODE", "1")
+    _wipe_and_seed()
+    r = client.post("/redteam/tamper")
+    assert r.status_code == 200, r.text
+    serial = r.json()["tampered"]
+    assert serial.startswith("REDTEAM-T-"), serial
+    audit = client.get("/audit/integrity").json()
+    assert audit["ok"] is False, audit
+    assert audit["mismatches"], audit
+    v = client.get(f"/products/{serial}/verify").json()
+    assert v["verdict"] == "TAMPERED", v
+    failed = {c["id"] for c in v["checks"] if c["status"] == "fail"}
+    assert "R09" in failed, failed
+
+
+def test_hint_buttons_point_at_claim_flow(monkeypatch):
+    monkeypatch.setenv("REDTEAM_MODE", "1")
+    _wipe_and_seed()
+    for attack in ("double_claim", "postsale"):
+        r = client.post(f"/redteam/{attack}")
+        assert r.status_code == 200, r.text
+        assert "claim" in r.json()["hint"], r.text
