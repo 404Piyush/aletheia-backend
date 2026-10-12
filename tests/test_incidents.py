@@ -49,7 +49,7 @@ def test_incident_upsert_and_feed():
     client.post("/events/sign", json={"serial": s, "type": "SCAN", "actor": "did:attacker",
                                       "ts": int(time.time()), "lat": 19.07, "lon": 72.87})
     client.post("/events/sign", json={"serial": s, "type": "SCAN", "actor": "did:attacker2",
-                                      "ts": int(time.time()) + 1200, "lat": 28.61, "lon": 77.20})
+                                      "ts": int(time.time()) + 120, "lat": 28.61, "lon": 77.20})
     r = client.get(f"/products/{s}/verify")
     assert r.json()["verdict"] in ("CLONE_DETECTED", "SUSPICIOUS")
     r = client.get("/incidents")

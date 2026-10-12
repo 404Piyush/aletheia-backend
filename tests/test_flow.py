@@ -43,10 +43,10 @@ def test_full_flow():
     r = client.post("/events/sign", json={"serial": serial, "type": "SCAN",
                                           "actor": "did:transporter1", "lat": 19.07, "lon": 72.87})
     assert r.status_code == 200, r.text
-    # clone: far city 20 min later -> R04
+    # clone: far city 2 min later -> R04
     import time
     r = client.post("/events/sign", json={"serial": serial, "type": "SCAN",
-                                          "actor": "did:attacker2", "ts": int(time.time()) + 1200,
+                                          "actor": "did:attacker2", "ts": int(time.time()) + 120,
                                           "lat": 28.61, "lon": 77.20})
     assert r.status_code == 200, r.text
     r = client.get(f"/products/{serial}/verify")

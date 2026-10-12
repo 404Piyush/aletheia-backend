@@ -68,7 +68,9 @@ def _send(fn):
         })
         signed = _registrar.sign_transaction(tx)
         h = _w3.eth.send_raw_transaction(signed.raw_transaction)
-        rc = _w3.eth.wait_for_transaction_receipt(h, timeout=60)
+        # Short receipt wait: QBFT dev chain seals instantly. A long wait here
+        # blocks the single-worker API for every request (past outage cause).
+        rc = _w3.eth.wait_for_transaction_receipt(h, timeout=20)
         assert rc.status == 1, f"tx reverted: {h.hex()}"
         return h.hex()
 
@@ -89,6 +91,9 @@ def _save(s):
 
 
 # ---------- public API ----------
+class ChainUnavailable(Exception):
+    """Raised when the chain backend cannot be reached. Callers must fail
+    closed (deny writes) rather than assume a safe state."""
 def register_lot(lot_id: str, manufacturer: str, root: str, qty: int) -> str:
     if USE_CHAIN:
         try:
@@ -157,10 +162,9 @@ def get_anchor(aid: int):
 
 def freeze_lot(lot_id: str, value: bool = True):
     if USE_CHAIN:
-        try:
-            _send(_contract.functions.freezeLot(lot_key(lot_id), value))
-        except Exception:
-            pass
+        # Propagate: callers (recall) must NOT mark the DB frozen when the
+        # on-chain freeze failed, or chain and DB diverge silently.
+        _send(_contract.functions.freezeLot(lot_key(lot_id), value))
         return
     s = _load()
     s["frozen"][lot_id] = value
@@ -171,8 +175,9 @@ def is_frozen(lot_id: str) -> bool:
     if USE_CHAIN:
         try:
             return bool(_contract.functions.lotFrozen(lot_key(lot_id)).call())
-        except Exception:
-            return False
+        except Exception as e:
+            # Fail CLOSED: unknown chain state must pause writes, never allow them.
+            raise ChainUnavailable(f"lotFrozen call failed: {type(e).__name__}")
     return bool(_load()["frozen"].get(lot_id, False))
 
 

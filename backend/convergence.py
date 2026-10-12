@@ -60,6 +60,15 @@ def _queue(payload: dict, reason: str) -> dict:
     entry = {"ts": int(time.time()), "status": "queued", "reason": reason, "payload": payload}
     with open(OUTBOX, "a") as f:
         f.write(json.dumps(entry) + "\n")
+    # cap: keep outbox a readable transcript, not unbounded growth
+    try:
+        with open(OUTBOX) as f:
+            lines = f.readlines()
+        if len(lines) > 1000:
+            with open(OUTBOX, "w") as f:
+                f.writelines(lines[-1000:])
+    except OSError:
+        pass
     return {"ok": False, "queued": True, "reason": reason}
 
 
@@ -139,7 +148,10 @@ def case_status(serial: str) -> dict:
         if r.status_code != 200:
             return {"ok": False, "reason": f"partner HTTP {r.status_code}"}
         items = r.json() if isinstance(r.json(), list) else r.json().get("handoffs", [])
-        hits = [h for h in items if serial in json.dumps(h)]
+        hits = [h for h in items if isinstance(h, dict) and h.get("serial") == serial]
+        if not hits:
+            # fallback: substring over the payload (partner schema may vary)
+            hits = [h for h in items if serial in json.dumps(h)]
         return {"ok": True, "matches": hits}
     except Exception as e:
         return {"ok": False, "reason": f"partner unreachable: {type(e).__name__}"}

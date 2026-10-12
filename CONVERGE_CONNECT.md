@@ -52,7 +52,10 @@ Contract: redeployed on every cold restart — read the live address from `GET /
 
 ## Endpoints you call
 
-All JSON. CORS open. No auth on demo endpoints (`X-API-KEY` accepted, not enforced).
+All JSON. CORS restricted to our frontends + public URL (see `CORS_ORIGINS` env).
+No auth on read-only demo endpoints. State-changing and debug endpoints
+(`/seed/*`, `/redteam/*`, `/signer/sign`, `/anchor/document` without
+`ANCHOR_API_KEY`) are localhost-only.
 
 ```bash
 BASE=https://continuity.404piyush.me   # live public API (or http://localhost:8000 via Option A)
@@ -79,8 +82,9 @@ curl $BASE/lots/SHOW/blast-radius
 # one SOLD, one CLAIMED — CLAIMED units survive recall)
 
 # 5. Anchor YOUR dossier hash on our chain (put returned tx in your audit log)
+# Needs ANCHOR_API_KEY (ask us) or call from localhost:
 curl -X POST $BASE/anchor/document -H 'Content-Type: application/json' \
-  -d '{"doc_hash":"<sha256 of your handoff package>"}'
+  -H 'X-API-KEY: <key>' -d '{"doc_hash":"<sha256 of your handoff package>"}'
 # -> {anchor_id, tx}
 ```
 

@@ -20,13 +20,19 @@ from .rules.engine import (r01_fork, r04_travel, r07_custody, score_and_confiden
                            verdict_for, Finding)
 
 app = FastAPI(title="Trust Fabric Chain API")
+_DEFAULT_ORIGINS = ["http://localhost:3000", "http://localhost:3001",
+                    "http://localhost:8000", "https://continuity.404piyush.me"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    # Restricted by default: an open `*` lets any website POST events from a
+    # visitor's browser. Override with CORS_ORIGINS env (comma-separated).
+    allow_origins=os.environ.get("CORS_ORIGINS", ",".join(_DEFAULT_ORIGINS)).split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 CUSTODY = ("MANUFACTURED", "HANDOVER_OFFER", "HANDOVER_ACCEPT", "SOLD")
+KNOWN_EVENT_TYPES = set(CUSTODY) | {"SCAN"}
+MAX_TS_SKEW_FUTURE = 300  # reject timestamps >5 min ahead (timeline poisoning)
 
 
 @app.get("/")
@@ -73,6 +79,17 @@ async def _serialize_db(request: Request, call_next):
 def require_redteam():
     if os.environ.get("REDTEAM_MODE") != "1":
         raise HTTPException(403, "redteam disabled")
+
+
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def require_local(request: Request):
+    """Demo-destructive endpoints (seed/reset, attack console, signing oracle)
+    must not be reachable through the public tunnel."""
+    host = request.client.host if request.client else ""
+    if host not in _LOCAL_HOSTS:
+        raise HTTPException(403, "localhost only")
 
 
 # ---------- models ----------
@@ -135,6 +152,15 @@ def create_lot(lot: LotIn):
     tx = ch.register_lot(lot.lot_id, lot.manufacturer, root, lot.size)
     c.execute("INSERT OR REPLACE INTO lots(lot_id,gtin,size,root,tx) VALUES(?,?,?,?,?)",
               (lot.lot_id, lot.gtin, lot.size, root, tx))
+    if isinstance(tx, str) and tx.startswith("exists:"):
+        # Same lot id, different content -> refuse: silently keeping the old
+        # on-chain root while storing a new DB root breaks R03 for every unit.
+        try:
+            onchain = ch.lot_root(lot.lot_id)
+        except Exception:
+            onchain = None
+        if onchain and onchain.lower() != root.lower():
+            raise HTTPException(409, "lot id already registered on-chain with a different root")
     # MANUFACTURED per unit
     for s in serials:
         ev = {"serial": s, "type": "MANUFACTURED", "actor": lot.manufacturer,
@@ -169,21 +195,51 @@ def _head(c, serial):
     return GENESIS_PREV, -1
 
 
+def _unknown_flood(c, lot_id: str) -> bool:
+    """Throttle invented-serial spam: >50 unknown attempts for one lot in
+    10 min means someone is farming unknown_attempts rows (storage DoS)."""
+    n = c.execute("SELECT COUNT(*) n FROM unknown_attempts WHERE lot_id=? AND ts>?",
+                  (lot_id, int(time.time()) - 600)).fetchone()["n"]
+    return n >= 50
+
+
 @app.post("/events/sign")
 def sign_event_api(e: EventIn):
     c = con()
+    # --- input validation (reject absurd/forged fields before touching state)
+    now = int(time.time())
+    if len(e.serial) > 128 or len(e.actor) > 128 or (e.to_actor and len(e.to_actor) > 128):
+        raise HTTPException(422, "serial/actor too long")
+    if e.type not in KNOWN_EVENT_TYPES:
+        raise HTTPException(422, f"unknown event type {e.type[:32]}")
+    if len(e.biz_step) > 64:
+        raise HTTPException(422, "biz_step too long")
+    ts = e.ts or now
+    if not (0 < ts <= now + MAX_TS_SKEW_FUTURE):
+        raise HTTPException(422, "ts out of range (must be <= now+5min)")
+    if e.lat is not None and not (-90 <= e.lat <= 90):
+        raise HTTPException(422, "lat out of range")
+    if e.lon is not None and not (-180 <= e.lon <= 180):
+        raise HTTPException(422, "lon out of range")
     prod = c.execute("SELECT * FROM products WHERE serial=?", (e.serial,)).fetchone()
     if not prod:
         # unknown serial with known lot prefix -> R03 bookkeeping
         lot_guess = "-".join(e.serial.split("-")[:-1]) if "-" in e.serial else ""
         if lot_guess:
+            if _unknown_flood(c, lot_guess):
+                raise HTTPException(429, "too many unknown-serial attempts for this lot")
             c.execute("INSERT INTO unknown_attempts(serial,lot_id,ts,source) VALUES(?,?,?,?)",
-                      (e.serial, lot_guess, int(time.time()), e.actor))
+                      (e.serial, lot_guess, now, e.actor))
             c.commit()
         raise HTTPException(404, "unknown serial")
-    if ch.is_frozen(prod["lot_id"]):
+    try:
+        frozen = ch.is_frozen(prod["lot_id"])
+    except Exception:
+        # Fail CLOSED: if the chain is unreachable we cannot know whether the
+        # lot is recalled, so pause writes instead of allowing them.
+        raise HTTPException(503, "chain state unknown; writes paused")
+    if frozen:
         raise HTTPException(423, "lot frozen/recalled")
-    ts = e.ts or int(time.time())
     lat_mdeg = int(e.lat * 1000) if e.lat is not None else None
     lon_mdeg = int(e.lon * 1000) if e.lon is not None else None
     is_custody = e.type in CUSTODY
@@ -289,6 +345,8 @@ def build_verdict(serial: str):
         findings.append(Finding("R03", "critical", "Serial fails Merkle inclusion vs on-chain lot root",
                                 [serial], "Quarantine unit; check enrolment"))
     if not prod:
+        if _unknown_flood(c, ""):
+            raise HTTPException(429, "too many unknown-serial attempts")
         c.execute("INSERT INTO unknown_attempts(serial,lot_id,ts,source) VALUES(?,?,?,?)",
                   (serial, "", int(time.time()), "verify"))
         c.commit()
@@ -471,6 +529,12 @@ def audit():
 @app.post("/products/{serial}/claim")
 def claim(serial: str, body: ClaimIn):
     c = con()
+    session = (body.session_id or "").strip()
+    if not session or len(session) > 128 or len(body.secret) > 256:
+        # Empty session is an R12 bypass: two buyers with "" hash identically
+        # and the second gets idempotent CLAIMED instead of contested.
+        raise HTTPException(422, "session_id required (non-empty, <=128 chars)")
+    body = ClaimIn(secret=body.secret, session_id=session)
     p = c.execute("SELECT * FROM products WHERE serial=?", (serial,)).fetchone()
     if not p:
         raise HTTPException(404, "unknown")
@@ -515,8 +579,12 @@ def claim(serial: str, body: ClaimIn):
 @app.post("/lots/{lot_id}/recall")
 def recall(lot_id: str):
     c = con()
-    import hashlib as hl
-    ch.freeze_lot(hl.sha256(lot_id.encode()).hexdigest() if False else lot_id, True)
+    try:
+        ch.freeze_lot(lot_id, True)
+    except Exception as ex:
+        # Chain first, DB second: never mark frozen locally when the on-chain
+        # freeze failed, or writes stay blocked here while the chain is open.
+        raise HTTPException(502, f"on-chain freeze failed ({type(ex).__name__}); lot NOT frozen")
     # store by raw lot_id (chain mimic uses raw key)
     c.execute("UPDATE products SET status='FROZEN' WHERE lot_id=? AND status!='CLAIMED'", (lot_id,))
     c.execute("UPDATE lots SET frozen=1 WHERE lot_id=?", (lot_id,))
@@ -604,7 +672,13 @@ def serial_anchor(serial: str):
 
 
 @app.post("/anchor/document")
-def anchor_doc(body: dict, x_api_key: str | None = Header(default=None)):
+def anchor_doc(body: dict, request: Request, x_api_key: str | None = Header(default=None)):
+    key = os.environ.get("ANCHOR_API_KEY", "")
+    if key:
+        if x_api_key != key:
+            raise HTTPException(403, "bad api key")
+    else:
+        require_local(request)
     h = body.get("doc_hash", "")
     aid, tx = ch.anchor_batch(h if h.startswith("0x") else "0x" + hashlib.sha256(h.encode()).hexdigest(), 1)
     return {"anchor_id": aid, "tx": tx}
@@ -670,7 +744,8 @@ def converge_actor_map():
 
 # ---------- redteam (localhost only) ----------
 @app.post("/redteam/{attack}")
-def redteam(attack: str):
+def redteam(attack: str, request: Request):
+    require_local(request)
     require_redteam()
     c = con()
     row = c.execute("SELECT serial,lot_id FROM products LIMIT 1").fetchone()
@@ -714,7 +789,8 @@ def redteam(attack: str):
 
 
 @app.post("/seed/demo")
-def seed_demo():
+def seed_demo(request: Request):
+    require_local(request)
     from . import signer as _signer
     c = con()
     for did, role in (("did:maker1", "manufacturer"), ("did:transporter1", "transporter"),
@@ -728,10 +804,11 @@ def seed_demo():
 
 
 @app.post("/seed/tree")
-def seed_tree():
+def seed_tree(request: Request):
     """Phase 3: LOT-TREE (8 units) packed as pallet -> cases -> units with mixed
     custodians. One unit SOLD+CLAIMED (recall must skip it), one SOLD, rest ACTIVE
     across transporter/retailer. Re-runnable: resets the tree."""
+    require_local(request)
     c = con()
     lot_id = "LOT-TREE"
     mk, tp, rt = "did:maker1", "did:transporter1", "did:retailer1"
@@ -744,28 +821,33 @@ def seed_tree():
                                       to_actor=to, ts=ts))
 
     base = int(time.time())
+    tick = [base]
+
+    def _t():
+        tick[0] += 1
+        return tick[0]
 
     # C-T1 (in P-T1): 3 units to transporter; 000003 goes on to retailer->SOLD->CLAIMED
-    for i, s in enumerate(serials[:3]):
-        _ev(s, "HANDOVER_OFFER", mk, to=tp, ts=base + i * 10)
-        _ev(s, "HANDOVER_ACCEPT", tp, ts=base + i * 10 + 1)
+    for s in serials[:3]:
+        _ev(s, "HANDOVER_OFFER", mk, to=tp, ts=_t())
+        _ev(s, "HANDOVER_ACCEPT", tp, ts=_t())
     s3 = serials[2]
-    _ev(s3, "HANDOVER_OFFER", tp, to=rt, ts=base + 100)
-    _ev(s3, "HANDOVER_ACCEPT", rt, ts=base + 101)
-    _ev(s3, "SOLD", rt, ts=base + 102)
+    _ev(s3, "HANDOVER_OFFER", tp, to=rt, ts=_t())
+    _ev(s3, "HANDOVER_ACCEPT", rt, ts=_t())
+    _ev(s3, "SOLD", rt, ts=_t())
     sec3 = secrets.get(s3)
     claim_out = None
     if sec3:
         claim_out = claim(s3, ClaimIn(secret=sec3, session_id="buyer1-session"))
     # C-T2 (in P-T1): 000004 retailer->SOLD, 000005 stays ACTIVE at maker
     s4, s5 = serials[3], serials[4]
-    _ev(s4, "HANDOVER_OFFER", mk, to=rt, ts=base + 200)
-    _ev(s4, "HANDOVER_ACCEPT", rt, ts=base + 201)
-    _ev(s4, "SOLD", rt, ts=base + 202)
+    _ev(s4, "HANDOVER_OFFER", mk, to=rt, ts=_t())
+    _ev(s4, "HANDOVER_ACCEPT", rt, ts=_t())
+    _ev(s4, "SOLD", rt, ts=_t())
     # C-T3 (in P-T2): 3 units to retailer
-    for i, s in enumerate(serials[5:]):
-        _ev(s, "HANDOVER_OFFER", mk, to=rt, ts=base + 300 + i * 10)
-        _ev(s, "HANDOVER_ACCEPT", rt, ts=base + 300 + i * 10 + 1)
+    for s in serials[5:]:
+        _ev(s, "HANDOVER_OFFER", mk, to=rt, ts=_t())
+        _ev(s, "HANDOVER_ACCEPT", rt, ts=_t())
 
     c.execute("INSERT OR REPLACE INTO containers(id,type,parent_id,lot_id) VALUES(?,?,?,?)",
               ("P-T1", "PALLET", None, lot_id))
@@ -797,6 +879,7 @@ def signer_pubkey(did: str):
 
 
 @app.post("/signer/sign")
-def signer_sign(body: SignIn):
+def signer_sign(body: SignIn, request: Request):
+    require_local(request)
     from . import signer as _signer
     return _signer.sign_for(body.did, body.payload)
