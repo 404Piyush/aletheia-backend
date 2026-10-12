@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from backend.rules.engine import r01_fork, r04_travel, r07_custody, verdict_for
+from backend.rules.engine import Finding, r01_fork, r04_travel, r07_custody, score_and_confidence, verdict_for
 
 # Oslo store POS -> Gdansk kiosk, mirrors the live LOT-DEMO-A clone pair.
 OSLO = {"ts": 1_000_000, "lat_mdeg": 59914, "lon_mdeg": 10752, "event_hash": "evt-oslo"}
@@ -136,3 +136,40 @@ def test_r04_plus_r07_is_clone():
     assert travel is not None and custody is not None
     verdict, _ = verdict_for([travel, custody])
     assert verdict == "CLONE_DETECTED"
+
+
+def _f(rule, sev="critical"):
+    return Finding(rule, sev, f"{rule} fired", ["h1"], "Hold stock")
+
+
+def test_scoring_weights_pinned():
+    assert score_and_confidence([_f("R04")], 6, True)[0] == 40
+    assert score_and_confidence([_f("R04"), _f("R07", "high")], 6, True)[0] == 65
+    assert score_and_confidence([_f("R04"), _f("R07", "high"), _f("R08")], 6, True)[0] == 100
+    assert score_and_confidence([_f("R01"), _f("R04"), _f("R09")], 6, True)[0] == 100
+    assert score_and_confidence([_f("R06", "medium")], 6, True)[0] == 10
+
+
+def test_scoring_dedups_same_rule():
+    one = score_and_confidence([_f("R04")], 6, True)[0]
+    two = score_and_confidence([_f("R04"), _f("R04")], 6, True)[0]
+    assert one == two == 40
+
+
+def test_verdict_routing_table():
+    for rule in ("R01", "R02", "R03", "R05", "R12"):
+        assert verdict_for([_f(rule)])[0] == "CLONE_DETECTED", rule
+    for rule in ("R08", "R09"):
+        assert verdict_for([_f(rule)])[0] == "TAMPERED", rule
+    for rule in ("R06", "R07", "R11", "R13", "R14"):
+        assert verdict_for([_f(rule)])[0] == "SUSPICIOUS", rule
+    assert verdict_for([])[0] == "VERIFIED"
+
+
+def test_confidence_rules():
+    assert score_and_confidence([_f("R03")], 1, False)[1] == "high"
+    assert score_and_confidence([_f("R09")], 1, False)[1] == "high"
+    assert score_and_confidence([_f("R06", "medium")], 3, False)[1] == "medium"
+    assert score_and_confidence([_f("R06", "medium")], 1, False)[1] == "low"
+    assert score_and_confidence([], 5, True)[1] == "high"
+    assert score_and_confidence([], 1, False)[1] == "medium"
