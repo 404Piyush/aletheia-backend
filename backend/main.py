@@ -35,6 +35,15 @@ def root():
             "chain": ch.chain_info()}
 
 
+@app.get("/health")
+def health():
+    c = con()
+    evts = c.execute("SELECT COUNT(*) n FROM events").fetchone()["n"]
+    inc = c.execute("SELECT COUNT(*) n FROM incidents WHERE status='open'").fetchone()["n"]
+    return {"status": "ok", "service": "trust-fabric", "events": evts,
+            "open_incidents": inc, "chain": ch.chain_info()}
+
+
 _db_lock = threading.Lock()
 _open_conns: ContextVar[list] = ContextVar("conns", default=[])
 
@@ -308,12 +317,71 @@ def build_verdict(serial: str):
     for f in findings:
         checks.append({"id": f.rule_id, "status": "fail", "severity": f.severity,
                        "reason": f.reason, "evidence_refs": f.evidence_refs, "next_step": f.next_step})
-    return {"serial": serial, "verdict": verdict, "display": display, "risk_score": score,
-            "confidence": conf, "product": product,
-            "checks": checks,
-            "uncertainty": ["Only %d observations" % len(evs)] if len(evs) < 3 else [],
-            "next_steps": [f.next_step for f in findings][:3] or ["No action"],
-            "proofs": {"lot": lp}}
+    out = {"serial": serial, "verdict": verdict, "display": display, "risk_score": score,
+           "confidence": conf, "product": product,
+           "checks": checks,
+           "uncertainty": ["Only %d observations" % len(evs)] if len(evs) < 3 else [],
+           "next_steps": [f.next_step for f in findings][:3] or ["No action"],
+           "proofs": {"lot": lp}}
+    if prod:
+        _upsert_incident(c, serial, verdict, findings)
+    return out
+
+
+_SEV_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
+def _upsert_incident(c, serial: str, verdict: str, findings: list) -> None:
+    """One incident per serial; findings deduped by (rule, evidence)."""
+    seen = {}
+    for f in findings:
+        seen[(f.rule_id, tuple(f.evidence_refs))] = {
+            "rule_id": f.rule_id, "severity": f.severity, "reason": f.reason,
+            "evidence_refs": list(f.evidence_refs), "next_step": f.next_step}
+    sev = max([f["severity"] for f in seen.values()],
+              key=lambda s: _SEV_RANK.get(s, 0), default="low")
+    c.execute(
+        "INSERT INTO incidents(serial,severity,status,findings_json,updated_ts) VALUES(?,?,?,?,?) "
+        "ON CONFLICT(serial) DO UPDATE SET severity=excluded.severity, status=excluded.status, "
+        "findings_json=excluded.findings_json, updated_ts=excluded.updated_ts",
+        (serial, sev, "open" if seen else "clear",
+         json.dumps(sorted(seen.values(), key=lambda f: f["rule_id"])), int(time.time())))
+    c.commit()
+
+
+@app.get("/incidents")
+def list_incidents(status: str = "all", severity: str = "all"):
+    c = con()
+    q = "SELECT serial,severity,status,findings_json,updated_ts FROM incidents ORDER BY updated_ts DESC"
+    rows = [dict(r) for r in c.execute(q).fetchall()]
+    for r in rows:
+        r["findings"] = json.loads(r.pop("findings_json") or "[]")
+        r["count"] = len(r["findings"])
+    if status != "all":
+        rows = [r for r in rows if r["status"] == status]
+    if severity != "all":
+        rows = [r for r in rows if r["severity"] == severity]
+    return {"incidents": rows, "total": len(rows)}
+
+
+@app.get("/incidents/{serial}")
+def get_incident(serial: str):
+    c = con()
+    evs = _events(c, serial)
+    timeline = [{"event_hash": e.get("event_hash"), "type": e.get("type"),
+                 "actor": e.get("actor"), "ts": e.get("ts"),
+                 "biz_step": e.get("biz_step")} for e in evs]
+    row = c.execute("SELECT severity,status,findings_json,updated_ts FROM incidents WHERE serial=?",
+                    (serial,)).fetchone()
+    if not row:
+        v = build_verdict(serial)
+        if v["verdict"] == "UNKNOWN":
+            raise HTTPException(404, "unknown serial")
+        row = c.execute("SELECT severity,status,findings_json,updated_ts FROM incidents WHERE serial=?",
+                        (serial,)).fetchone()
+    return {"serial": serial, "severity": row["severity"], "status": row["status"],
+            "findings": json.loads(row["findings_json"] or "[]"),
+            "updated_ts": row["updated_ts"], "timeline": timeline}
 
 
 @app.get("/products/{serial}/verify")

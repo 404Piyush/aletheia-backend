@@ -4,9 +4,11 @@ services:
     volumes:
       - ./besu-qbft/genesis.json:/config/genesis.json:ro
       - ./besu-qbft/validator.key:/config/validator.key:ro
+      - besu-data:/var/lib/besu
     command: >
       --genesis-file=/config/genesis.json
       --node-private-key-file=/config/validator.key
+      --data-path=/var/lib/besu
       --rpc-http-enabled --rpc-http-host=0.0.0.0 --rpc-http-port=8545
       --rpc-http-api=ETH,NET,WEB3 --host-allowlist=*
     ports:
@@ -27,3 +29,4 @@ services:
 
 volumes:
   tfdata: {}
+  besu-data: {}

@@ -16,7 +16,21 @@ os.environ["REDTEAM_MODE"] = "1"
 
 from backend.main import app
 
+import pytest
+
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_db(monkeypatch):
+    monkeypatch.setenv("DB_PATH", "/tmp/test_trust.db")
+    monkeypatch.setenv("ANCHOR_STORE", "/tmp/test_anchors.json")
+    for f in ("/tmp/test_trust.db", "/tmp/test_anchors.json"):
+        try:
+            os.remove(f)
+        except FileNotFoundError:
+            pass
+    yield
 
 
 def test_full_flow():

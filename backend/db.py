@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS unknown_attempts(
   id INTEGER PRIMARY KEY AUTOINCREMENT, serial TEXT, lot_id TEXT, ts INTEGER, source TEXT
 );
 CREATE TABLE IF NOT EXISTS incidents(
-  serial TEXT PRIMARY KEY, severity TEXT, status TEXT, findings TEXT, updated_ts INTEGER
+  serial TEXT PRIMARY KEY, severity TEXT, status TEXT, findings_json TEXT, updated_ts INTEGER
 );
 CREATE TABLE IF NOT EXISTS batches(
   id INTEGER PRIMARY KEY AUTOINCREMENT, root TEXT, count INTEGER, tx TEXT, ts INTEGER
@@ -48,4 +48,8 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL;")
     con.executescript(SCHEMA)
+    cols = [r["name"] for r in con.execute("PRAGMA table_info(incidents)").fetchall()]
+    if "findings" in cols and "findings_json" not in cols:
+        con.execute("ALTER TABLE incidents RENAME COLUMN findings TO findings_json")
+        con.commit()
     return con
