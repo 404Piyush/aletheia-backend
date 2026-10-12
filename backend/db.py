@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS batches(
 
 def connect(path: str | None = None) -> sqlite3.Connection:
     p = path or os.environ.get("DB_PATH", "trust.db")
-    con = sqlite3.connect(p)
+    con = sqlite3.connect(p, timeout=30)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL;")
     con.executescript(SCHEMA)
     return con

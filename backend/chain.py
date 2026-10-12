@@ -1,9 +1,11 @@
 """Chain adapter: web3 if RPC available, else local file-backed mimic with same API."""
 import json
 import os
+import threading
 import time
 
 STORE = os.environ.get("ANCHOR_STORE", "anchors.json")
+_file_lock = threading.Lock()
 
 
 def _load():
@@ -15,8 +17,9 @@ def _load():
 
 
 def _save(s):
-    with open(STORE, "w") as f:
-        json.dump(s, f)
+    with _file_lock:
+        with open(STORE, "w") as f:
+            json.dump(s, f)
 
 
 def w3_or_none():

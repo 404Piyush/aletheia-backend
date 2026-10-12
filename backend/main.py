@@ -4,9 +4,11 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
 import time
+from contextvars import ContextVar
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from .crypto import event_hash, sign_event, verify_event, GENESIS_PREV, to_hex
@@ -20,8 +22,30 @@ app = FastAPI(title="Trust Fabric Chain API")
 CUSTODY = ("MANUFACTURED", "HANDOVER_OFFER", "HANDOVER_ACCEPT", "SOLD")
 
 
+_db_lock = threading.Lock()
+_open_conns: ContextVar[list] = ContextVar("conns", default=[])
+
+
 def con() -> sqlite3.Connection:
-    return connect()
+    c = connect()
+    _open_conns.get().append(c)
+    return c
+
+
+@app.middleware("http")
+async def _serialize_db(request: Request, call_next):
+    # SQLite demo store: one request at a time, always release connections.
+    with _db_lock:
+        token = _open_conns.set([])
+        try:
+            return await call_next(request)
+        finally:
+            for c in _open_conns.get():
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            _open_conns.reset(token)
 
 
 def require_redteam():
@@ -150,10 +174,13 @@ def sign_event_api(e: EventIn):
     # prototype: accept demo signatures; real verify if signer key known
     sig = e.signature or f"demo:{e.actor}"
     signer = e.signer or e.actor
-    c.execute(
-        "INSERT INTO events(serial,type,actor,ts,lat_mdeg,lon_mdeg,biz_step,to_actor,prev_hash,ref_hash,seq,event_hash,signature,signer,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (e.serial, e.type, e.actor, ts, lat_mdeg, lon_mdeg, e.biz_step, e.to_actor,
-         body["prev_hash"], body["ref_hash"], body["seq"], body["event_hash"], sig, signer, json.dumps(body)))
+    try:
+        c.execute(
+            "INSERT INTO events(serial,type,actor,ts,lat_mdeg,lon_mdeg,biz_step,to_actor,prev_hash,ref_hash,seq,event_hash,signature,signer,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (e.serial, e.type, e.actor, ts, lat_mdeg, lon_mdeg, e.biz_step, e.to_actor,
+             body["prev_hash"], body["ref_hash"], body["seq"], body["event_hash"], sig, signer, json.dumps(body)))
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "duplicate event (replay rejected)")
     if e.type == "HANDOVER_ACCEPT":
         c.execute("UPDATE products SET current_custodian=? WHERE serial=?", (e.actor, e.serial))
     if e.type == "SOLD":
@@ -347,6 +374,12 @@ def claim(serial: str, body: ClaimIn):
     p = c.execute("SELECT * FROM products WHERE serial=?", (serial,)).fetchone()
     if not p:
         raise HTTPException(404, "unknown")
+    # R02 burst: >=5 wrong secrets in 10 min -> throttle
+    burst = c.execute(
+        "SELECT COUNT(*) n FROM claims WHERE serial=? AND outcome='wrong_secret' AND ts>?",
+        (serial, int(time.time()) - 600)).fetchone()["n"]
+    if burst >= 5:
+        raise HTTPException(429, "too many attempts (R02 burst); try later")
     if hashlib.sha256(body.secret.encode()).hexdigest() != p["secret_hash"]:
         c.execute("INSERT INTO claims(serial,session_hash,ts,outcome) VALUES(?,?,?,?)",
                   (serial, hashlib.sha256(body.session_id.encode()).hexdigest(), int(time.time()), "wrong_secret"))
