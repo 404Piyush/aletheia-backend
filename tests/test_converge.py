@@ -22,11 +22,14 @@ def test_incident_payload_matches_partner_schema():
          "product": {"lot_id": "LOT-A"},
          "checks": [{"id": "R04", "status": "fail", "reason": "far travel"}],
          "next_steps": []}
-    p = build_incident_payload("LOT-A-000123", v, "https://continuity.404piyush.me/x")
-    assert p == {"serial": "LOT-A-000123", "lotId": "LOT-A", "verdict": "CLONE_DETECTED",
+    p = build_incident_payload("LOT-A-000123", v, "https://continuity.404piyush.me/x",
+                               case_id="TF-LOT-A-000123-1")
+    assert p == {"caseId": "TF-LOT-A-000123-1",
+                 "serial": "LOT-A-000123", "lotId": "LOT-A", "verdict": "CLONE_DETECTED",
                  "riskScore": 80, "confidence": "high",
                  "failedChecks": ["Check R04: far travel"],
-                 "evidenceBundleUrl": "https://continuity.404piyush.me/x"}
+                 "evidenceBundleUrl": "https://continuity.404piyush.me/x",
+                 "checks": [{"id": "R04", "status": "fail", "reason": "far travel"}]}
 
 
 def test_actor_map_falls_back_to_static(monkeypatch):

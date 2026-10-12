@@ -134,23 +134,23 @@ def test_case_id_validation():
 def test_converge_case_stores_validated_id(monkeypatch):
     import backend.convergence as cv
     monkeypatch.setattr(cv, "dispatch_case",
-                        lambda s, v, u: {"ok": True, "via": "incidents",
+                        lambda s, v, u, case_id=None: {"ok": True, "via": "incidents",
                                          "partner": {"id": "../../evil"}})
     r = client.post("/lots", json={"lot_id": "AUDIT-C", "size": 1, "manufacturer": "did:maker1"})
     assert r.status_code == 200, r.text
-    r = client.post("/converge/case", json={"serial": "AUDIT-C-000001"})
+    r = client.post("/converge/case", json={"serial": "AUDIT-C-000001", "force": True})
     assert r.status_code == 200, r.text
     import sqlite3
     con = sqlite3.connect("/tmp/test_cvaudit.db")
     row = con.execute("SELECT case_id FROM converge_cases WHERE serial='AUDIT-C-000001'").fetchone()
     con.close()
-    assert row is not None and row[0] == "", row
+    assert row is not None and row[0].startswith("TF-AUDIT-C-000001-"), row
 
 
 def test_dispatch_throttle():
     r = client.post("/lots", json={"lot_id": "AUDIT-T", "size": 1, "manufacturer": "did:maker1"})
     assert r.status_code == 200, r.text
-    r1 = client.post("/converge/case", json={"serial": "AUDIT-T-000001"})
+    r1 = client.post("/converge/case", json={"serial": "AUDIT-T-000001", "force": True})
     assert r1.status_code == 200, r1.text
-    r2 = client.post("/converge/case", json={"serial": "AUDIT-T-000001"})
+    r2 = client.post("/converge/case", json={"serial": "AUDIT-T-000001", "force": True})
     assert r2.status_code == 429, r2.text

@@ -4,11 +4,14 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 import threading
 import time
+import traceback
 from contextvars import ContextVar
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -51,6 +54,12 @@ def health():
 
 
 _db_lock = threading.Lock()
+# A worker stuck in an unbounded blocking call (e.g. DNS inside an httpx
+# request) holds _db_lock for the whole request; the async middleware would
+# then block the event loop forever and wedge the server (seen 3x). Bound
+# the wait: shed load with 503 instead of hanging. Normal acquisition is
+# instant; hitting the timeout means a worker is genuinely stuck.
+_LOCK_TIMEOUT_S = float(os.environ.get("DB_LOCK_TIMEOUT_S", "30"))
 _open_conns: ContextVar[list] = ContextVar("conns", default=[])
 
 
@@ -63,17 +72,38 @@ def con() -> sqlite3.Connection:
 @app.middleware("http")
 async def _serialize_db(request: Request, call_next):
     # SQLite demo store: one request at a time, always release connections.
-    with _db_lock:
-        token = _open_conns.set([])
-        try:
-            return await call_next(request)
-        finally:
-            for c in _open_conns.get():
-                try:
-                    c.close()
-                except Exception:
-                    pass
-            _open_conns.reset(token)
+    t0 = time.time()
+    acquired = _db_lock.acquire(timeout=_LOCK_TIMEOUT_S)
+    if not acquired:
+        return JSONResponse(status_code=503,
+                            content={"error": "server busy (db lock); retry shortly"})
+    token = _open_conns.set([])
+    try:
+        resp = await call_next(request)
+    finally:
+        for c in _open_conns.get():
+            try:
+                c.close()
+            except Exception:
+                pass
+        _open_conns.reset(token)
+        _db_lock.release()
+    dt = time.time() - t0
+    if dt > 5:
+        print(f"SLOW {dt:.1f}s {request.method} {request.url.path}", flush=True)
+    return resp
+
+
+@app.get("/debug/threads")
+def debug_threads(request: Request):
+    """Localhost-only stack dump of every thread. If the server ever wedges
+    again, this shows exactly which worker is stuck and in what call."""
+    require_local(request)
+    frames = sys._current_frames()
+    out = {}
+    for tid, frame in frames.items():
+        out[str(tid)] = "".join(traceback.format_stack(frame))[-2000:]
+    return {"threads": len(out), "stacks": out}
 
 
 def require_redteam():
@@ -115,7 +145,7 @@ _DISPATCH_MIN_GAP = 3  # seconds between /converge/case dispatches
 
 def _dispatch_allowed(c) -> bool:
     """Global dispatch throttle: each dispatch holds the DB lock through up
-    to 16s of partner timeouts, so unauthenticated spam could wedge the API.
+    to ~25s+ of partner timeouts, so unauthenticated spam could wedge the API.
     DB-backed so it holds across workers."""
     now = int(time.time())
     row = c.execute("SELECT val FROM meta WHERE key='last_dispatch'").fetchone()
@@ -770,32 +800,46 @@ def anchor_doc(body: dict, request: Request, x_api_key: str | None = Header(defa
 
 class ConvergeIn(BaseModel):
     serial: str = Field(max_length=128)
+    force: bool = False
+
+
+# Verdicts worth paging the partner's custodians about (their incident enum,
+# PDF 2.1). Pushing a VERIFIED unit would open a junk handoff + Besu anchor
+# + 3 recall tasks on his box; require explicit force for that.
+_DISPATCHABLE = {"CLONE_DETECTED", "TAMPERED", "SUSPICIOUS"}
 
 
 @app.post("/converge/case")
 def converge_case(body: ConvergeIn, request: Request):
     """Push current verdict+bundle to partner handoff platform (queues if down)."""
     from . import convergence as cv
+    v = build_verdict(body.serial)
+    if v["verdict"] == "UNKNOWN":
+        raise HTTPException(422, "unknown serial: no verdict to dispatch")
+    if v["verdict"] not in _DISPATCHABLE and not body.force:
+        raise HTTPException(422, f"verdict is {v['verdict']}: nothing to escalate "
+                                 "(re-run with force=true to dispatch anyway)")
     c0 = con()
     if not _dispatch_allowed(c0):
         raise HTTPException(429, "dispatch throttled (one case per few seconds); retry shortly")
-    v = build_verdict(body.serial)
     public = os.environ.get("PUBLIC_BASE", "https://continuity.404piyush.me").rstrip("/")
     bundle_url = f"{public}/products/{body.serial}/bundle"
-    out = cv.dispatch_case(body.serial, v, bundle_url)
+    case_id = cv._new_case_id(body.serial)
+    out = cv.dispatch_case(body.serial, v, bundle_url, case_id)
     if out.get("ok"):
         try:
             p = out.get("partner", {})
             cid = (p.get("id") or p.get("caseId") or p.get("handoffId")
                    if isinstance(p, dict) else None)
+            cid = cv.valid_case_id(cid) or case_id
             c = con()
             c.execute("INSERT OR REPLACE INTO converge_cases(serial,case_id,ts,last_status) VALUES(?,?,?,?)",
-                      (body.serial, cv.valid_case_id(cid), int(time.time()), "open"))
+                      (body.serial, cid, int(time.time()), "open"))
             c.commit()
         except Exception:
             pass
     return {"serial": body.serial, "verdict": v["verdict"],
-            "risk_score": v["risk_score"], **out}
+            "risk_score": v["risk_score"], "caseId": out.get("caseId", case_id), **out}
 
 
 @app.get("/converge/status")
@@ -816,9 +860,16 @@ def converge_status(serial: str):
 
 @app.get("/converge/health")
 def converge_health():
+    from concurrent.futures import ThreadPoolExecutor
     from . import convergence as cv
-    m = cv.fetch_actor_map()
-    return {"partner_up": cv.partner_up(), "bridge": cv.bridge_status(),
+    # The partner box answers in ~17s; run the three probes concurrently so
+    # health costs one latency, not three. Each probe has its own timeout.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_map = pool.submit(cv.fetch_actor_map)
+        f_up = pool.submit(cv.partner_up)
+        f_bridge = pool.submit(cv.bridge_status)
+        m, up, bridge = f_map.result(), f_up.result(), f_bridge.result()
+    return {"partner_up": up, "bridge": bridge,
             "partner_base": cv.PARTNER_BASE, "project": cv.PARTNER_PROJECT,
             "actor_map_source": m["source"], "actor_map": m["map"]}
 

@@ -21,7 +21,7 @@ except FileNotFoundError:
     ACTOR_MAP = {}
 
 
-def partner_up(timeout: float = 3.0) -> bool:
+def partner_up(timeout: float = 20.0) -> bool:
     try:
         r = httpx.get(f"{PARTNER_BASE}/api/health", timeout=timeout)
         return r.status_code < 500
@@ -29,7 +29,7 @@ def partner_up(timeout: float = 3.0) -> bool:
         return False
 
 
-def bridge_status(timeout: float = 5.0) -> dict:
+def bridge_status(timeout: float = 25.0) -> dict:
     """His bridge health: GET /api/convergence/status."""
     try:
         r = httpx.get(f"{PARTNER_BASE}/api/convergence/status", timeout=timeout)
@@ -39,7 +39,7 @@ def bridge_status(timeout: float = 5.0) -> dict:
         return {"reachable": False, "reason": f"{type(e).__name__}"}
 
 
-def fetch_actor_map(timeout: float = 5.0) -> dict:
+def fetch_actor_map(timeout: float = 25.0) -> dict:
     """Live roster: GET /api/convergence/actor-map -> {did: userId}. Falls back to file."""
     try:
         r = httpx.get(f"{PARTNER_BASE}/api/convergence/actor-map", timeout=timeout)
@@ -73,12 +73,19 @@ def _queue(payload: dict, reason: str) -> dict:
     return {"ok": False, "queued": True, "reason": reason}
 
 
-def build_incident_payload(serial: str, verdict: dict, bundle_url: str) -> dict:
-    """His canonical schema: POST /api/convergence/incidents (CONVERGENCE.md 3.2)."""
+def build_incident_payload(serial: str, verdict: dict, bundle_url: str,
+                           case_id: str | None = None) -> dict:
+    """His canonical schema: POST /api/convergence/incidents (CONVERGENCE.md 3.2,
+    partner PDF 2.1). caseId keeps our dispatches as distinct cases on his
+    side instead of collapsing into his TC-1042 default; checks[] is the
+    structured companion to the human-readable failedChecks[]."""
     lot = (verdict.get("product") or {}).get("lot_id", serial.rsplit("-", 1)[0])
     failed = [f"Check {c.get('id')}: {c.get('reason', '')}"[:200]
               for c in verdict.get("checks", []) if c.get("status") == "fail"]
-    return {
+    structured = [{"id": c.get("id", "?"), "status": c.get("status", "?"),
+                   "reason": (c.get("reason", "") or "")[:200]}
+                  for c in verdict.get("checks", [])][:20]
+    payload = {
         "serial": serial,
         "lotId": lot,
         "verdict": verdict.get("verdict"),
@@ -87,6 +94,12 @@ def build_incident_payload(serial: str, verdict: dict, bundle_url: str) -> dict:
         "failedChecks": failed,
         "evidenceBundleUrl": bundle_url,
     }
+    if case_id:
+        # caseId first is cosmetic; rebuild ordered for readable transcripts.
+        payload = {"caseId": case_id, **payload, "checks": structured}
+    else:
+        payload["checks"] = structured
+    return payload
 
 
 def build_case_payload(serial: str, verdict: dict, bundle_url: str) -> dict:
@@ -110,12 +123,18 @@ def build_case_payload(serial: str, verdict: dict, bundle_url: str) -> dict:
     }
 
 
-def dispatch_case(serial: str, verdict: dict, bundle_url: str) -> dict:
-    incident = build_incident_payload(serial, verdict, bundle_url)
+def _new_case_id(serial: str) -> str:
+    return f"TF-{serial}-{int(time.time())}"[:128]
+
+
+def dispatch_case(serial: str, verdict: dict, bundle_url: str,
+                  case_id: str | None = None) -> dict:
+    case_id = valid_case_id(case_id) or _new_case_id(serial)
+    incident = build_incident_payload(serial, verdict, bundle_url, case_id)
     try:
         r = httpx.post(f"{PARTNER_BASE}/api/convergence/incidents", json=incident,
                        headers={"Content-Type": "application/json", "X-User-Id": PARTNER_USER},
-                       timeout=8.0)
+                       timeout=25.0)
     except Exception:
         return _try_handoffs(serial, verdict, bundle_url, incident)
     if r.status_code in (200, 201):
@@ -125,7 +144,7 @@ def dispatch_case(serial: str, verdict: dict, bundle_url: str) -> dict:
             partner = r.json()
         except Exception:
             partner = {"status": r.status_code, "text": r.text[:300]}
-        return {"ok": True, "via": "incidents", "partner": partner}
+        return {"ok": True, "via": "incidents", "caseId": case_id, "partner": partner}
     if r.status_code == 429 or r.status_code >= 500:
         # Transient: retry via the legacy channel.
         return _try_handoffs(serial, verdict, bundle_url, incident)
@@ -141,7 +160,7 @@ def _try_handoffs(serial: str, verdict: dict, bundle_url: str, incident: dict) -
     try:
         r = httpx.post(f"{PARTNER_BASE}/api/handoffs", json=payload,
                        headers={"Content-Type": "application/json", "X-User-Id": PARTNER_USER},
-                       timeout=8.0)
+                       timeout=25.0)
         if r.status_code in (200, 201):
             try:
                 partner = r.json()
@@ -164,7 +183,7 @@ def valid_case_id(cid: str | None) -> str:
     return ""
 
 
-def case_detail(case_id: str, timeout: float = 5.0) -> dict | None:
+def case_detail(case_id: str, timeout: float = 25.0) -> dict | None:
     """His case state: GET /api/convergence/cases/{id}."""
     if not valid_case_id(case_id):
         return None
@@ -179,7 +198,7 @@ def case_detail(case_id: str, timeout: float = 5.0) -> dict | None:
 
 def case_status(serial: str) -> dict:
     try:
-        r = httpx.get(f"{PARTNER_BASE}/api/handoffs", timeout=8.0)
+        r = httpx.get(f"{PARTNER_BASE}/api/handoffs", timeout=25.0)
         if r.status_code != 200:
             return {"ok": False, "reason": f"partner HTTP {r.status_code}"}
         items = r.json() if isinstance(r.json(), list) else r.json().get("handoffs", [])
