@@ -187,6 +187,7 @@ class EventIn(BaseModel):
     to_actor: str | None = None
     signature: str | None = None
     signer: str | None = None
+    counter: int | None = None
 
 
 class ClaimIn(BaseModel):
@@ -317,6 +318,8 @@ def sign_event_api(e: EventIn, skip_ts_bounds: bool = False):
     now = int(time.time())
     if len(e.serial) > 128 or len(e.actor) > 128 or (e.to_actor and len(e.to_actor) > 128):
         raise HTTPException(422, "serial/actor too long")
+    if e.counter is not None and not (0 <= e.counter <= 999999999):
+        raise HTTPException(422, "counter out of range")
     if e.type not in KNOWN_EVENT_TYPES:
         raise HTTPException(422, f"unknown event type {e.type[:32]}")
     if len(e.biz_step) > 64:
@@ -358,12 +361,14 @@ def sign_event_api(e: EventIn, skip_ts_bounds: bool = False):
         prev, seq = _head(c, e.serial)
         body = {"serial": e.serial, "type": e.type, "actor": e.actor, "ts": ts,
                 "lat_mdeg": lat_mdeg, "lon_mdeg": lon_mdeg, "biz_step": e.biz_step,
-                "to_actor": e.to_actor, "prev_hash": prev, "ref_hash": None, "seq": seq + 1}
+                "to_actor": e.to_actor, "prev_hash": prev, "ref_hash": None, "seq": seq + 1,
+                "counter": e.counter}
     else:
         head_h, _ = _head(c, e.serial)
         body = {"serial": e.serial, "type": e.type, "actor": e.actor, "ts": ts,
                 "lat_mdeg": lat_mdeg, "lon_mdeg": lon_mdeg, "biz_step": e.biz_step,
-                "to_actor": e.to_actor, "prev_hash": None, "ref_hash": head_h, "seq": None}
+                "to_actor": e.to_actor, "prev_hash": None, "ref_hash": head_h, "seq": None,
+                "counter": e.counter}
     body["event_hash"] = event_hash(body)
     from . import signer as _signer
     if e.signature:
@@ -470,6 +475,23 @@ def build_verdict(serial: str):
     if prod and prod["status"] == "CONTESTED":
         findings.append(Finding("R12", "high", "Second claimant after CLAIMED — contested",
                                 [serial], "Inspect seal; do not pick winner from data"))
+    # R02 seal use before sale (a claim attempt on an unsold unit)
+    if prod:
+        pre = c.execute("SELECT ts FROM claims WHERE serial=? AND outcome='pre_sale' LIMIT 1",
+                        (serial,)).fetchone()
+        if pre:
+            findings.append(Finding("R02", "high", "Claim attempted before sale — early seal use",
+                                    [serial], "Verify buyer channel; possible cloned QR in the wild"))
+    # R13 tap-counter regression (cloned/replayed tag reuses old counters)
+    taps = sorted([e for e in evs if e.get("type") == "SCAN" and e.get("counter") is not None],
+                  key=lambda x: x["ts"])
+    for a, b in zip(taps, taps[1:]):
+        if b["counter"] <= a["counter"]:
+            findings.append(Finding("R13", "high",
+                                    f"Tap counter regressed {a['counter']} -> {b['counter']} — replayed tag?",
+                                    [a.get("event_hash", ""), b.get("event_hash", "")],
+                                    "Inspect seal; possible cloned tag"))
+            break
     # R08 revoked/unregistered actor (consult actors table; unknown key = unregistered)
     known = {r["pubkey"] for r in c.execute("SELECT pubkey FROM actors WHERE active=1").fetchall()}
     known_dids = {r["did"] for r in c.execute("SELECT did FROM actors WHERE active=1").fetchall()}
@@ -486,7 +508,7 @@ def build_verdict(serial: str):
     # R09 integrity spot-check
     for e in evs:
         if e.get("event_hash") != event_hash({k: e[k] for k in
-                ("serial","type","actor","ts","lat_mdeg","lon_mdeg","biz_step","to_actor","prev_hash","ref_hash","seq") if k in e}):
+                ("serial","type","actor","ts","lat_mdeg","lon_mdeg","biz_step","to_actor","prev_hash","ref_hash","seq","counter") if k in e}):
             findings.append(Finding("R09", "critical", "Broken hash/signature chain",
                                     [e.get("event_hash", "")], "Run /audit/integrity"))
             break
@@ -639,7 +661,7 @@ def audit():
     c = con()
     bad = []
     keys = ("serial", "type", "actor", "ts", "lat_mdeg", "lon_mdeg",
-            "biz_step", "to_actor", "prev_hash", "ref_hash", "seq")
+            "biz_step", "to_actor", "prev_hash", "ref_hash", "seq", "counter")
     for r in c.execute("SELECT event_hash, raw FROM events").fetchall():
         try:
             raw = json.loads(r["raw"] or "{}")

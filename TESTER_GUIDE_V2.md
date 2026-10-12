@@ -29,9 +29,10 @@ curl -s http://127.0.0.1:3001/verify/SHOW-000001 -o /dev/null -w "%{http_code}\n
 ```
 
 Automated suites (run first, ~2 min): `python3 -m pytest tests/ -q` in
-trust-fabric → 50 passed (15 rules, 8 converge-audit, 7 security,
-5 converge, 4 C2, 3 lots-api, 2 redteam, 2 crypto, 1 blast, 1 flow,
-1 incidents, 1 signing). In trusttrace `uv run pytest -q` → 95+ passed.
+trust-fabric → 70 passed (15 rules, 9 redteam, 7 security, 5 converge,
+5 lifecycle, 4 C2, 3 lots-api, 3 identity, 3 evidence, 2 claims, 2 crypto,
+1 blast, 1 flow, 1 incidents, 1 signing, 8 converge-audit… total 70).
+In trusttrace `uv run pytest -q` → 95+ passed.
 
 ## 1. Core detection story (the main thing)
 

@@ -6,6 +6,14 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+os.environ["DB_PATH"] = "/tmp/test_claims.db"
+os.environ["ANCHOR_STORE"] = "/tmp/test_claims_anchors.json"
+for _f in ("/tmp/test_claims.db", "/tmp/test_claims_anchors.json"):
+    try:
+        os.remove(_f)
+    except FileNotFoundError:
+        pass
+
 from fastapi.testclient import TestClient
 
 from backend.main import app
