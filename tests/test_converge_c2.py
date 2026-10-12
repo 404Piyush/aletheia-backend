@@ -81,3 +81,29 @@ def test_verified_refused_without_force(monkeypatch):
 def test_unknown_serial_refused_even_with_force():
     r = client.post("/converge/case", json={"serial": "NOPE-NOT-REAL", "force": True})
     assert r.status_code == 422, r.text
+
+
+def test_handoff_ids_stored_and_returned(monkeypatch):
+    import backend.main as _main
+    monkeypatch.setattr(
+        cv, "dispatch_case",
+        lambda s, v, u, case_id=None: {"ok": True, "via": "incidents", "caseId": case_id,
+                                       "partner": {"caseId": case_id, "handoffId": "HO-1",
+                                                   "incidentId": "INC-1"}})
+    v = {"verdict": "TAMPERED", "risk_score": 40, "confidence": "high",
+         "product": {"lot_id": "C2H"}, "checks": [], "next_steps": []}
+    monkeypatch.setattr(_main, "build_verdict", lambda serial: v)
+    r = client.post("/lots", json={"lot_id": "C2H", "size": 1, "manufacturer": "did:maker1"})
+    assert r.status_code == 200, r.text
+    r = client.post("/converge/case", json={"serial": "C2H-000001"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["handoffId"] == "HO-1" and body["incidentId"] == "INC-1"
+    from backend.main import con as app_con
+    c = app_con()
+    try:
+        row = c.execute("SELECT case_id,handoff_id,incident_id FROM converge_cases "
+                        "WHERE serial='C2H-000001'").fetchone()
+    finally:
+        c.close()
+    assert row is not None and tuple(row) == (body["caseId"], "HO-1", "INC-1"), row

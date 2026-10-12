@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS batches(
 );
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, val INTEGER);
 CREATE TABLE IF NOT EXISTS converge_cases(
-  serial TEXT PRIMARY KEY, case_id TEXT, ts INTEGER, last_status TEXT
+  serial TEXT PRIMARY KEY, case_id TEXT, ts INTEGER, last_status TEXT,
+  handoff_id TEXT, incident_id TEXT
 );
 """
 
@@ -61,4 +62,11 @@ def connect(path: str | None = None) -> sqlite3.Connection:
         # counting), so old rows honestly report aid NULL.
         con.execute("ALTER TABLE batches ADD COLUMN aid INTEGER")
         con.commit()
+    ccols = [r["name"] for r in con.execute("PRAGMA table_info(converge_cases)").fetchall()]
+    for _col in ("handoff_id", "incident_id"):
+        if _col not in ccols:
+            # Pre-C3 rows tracked only our case echo; the partner's handoff
+            # + incident ids (needed for the gate walkthrough) backfill NULL.
+            con.execute(f"ALTER TABLE converge_cases ADD COLUMN {_col} TEXT")
+    con.commit()
     return con

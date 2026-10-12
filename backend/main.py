@@ -837,14 +837,19 @@ def converge_case(body: ConvergeIn, request: Request):
             cid = (p.get("id") or p.get("caseId") or p.get("handoffId")
                    if isinstance(p, dict) else None)
             cid = cv.valid_case_id(cid) or case_id
+            hid = cv.valid_case_id(p.get("handoffId")) if isinstance(p, dict) else ""
+            iid = cv.valid_case_id(p.get("incidentId")) if isinstance(p, dict) else ""
             c = con()
-            c.execute("INSERT OR REPLACE INTO converge_cases(serial,case_id,ts,last_status) VALUES(?,?,?,?)",
-                      (body.serial, cid, int(time.time()), "open"))
+            c.execute("INSERT OR REPLACE INTO converge_cases(serial,case_id,ts,last_status,handoff_id,incident_id) VALUES(?,?,?,?,?,?)",
+                      (body.serial, cid, int(time.time()), "open", hid, iid))
             c.commit()
         except Exception:
             pass
     return {"serial": body.serial, "verdict": v["verdict"],
-            "risk_score": v["risk_score"], "caseId": out.get("caseId", case_id), **out}
+            "risk_score": v["risk_score"], "caseId": out.get("caseId", case_id),
+            "handoffId": out.get("partner", {}).get("handoffId") if isinstance(out.get("partner"), dict) else None,
+            "incidentId": out.get("partner", {}).get("incidentId") if isinstance(out.get("partner"), dict) else None,
+            **out}
 
 
 @app.get("/converge/status")
@@ -853,7 +858,7 @@ def converge_status(serial: str):
     from . import convergence as cv
     try:
         c = con()
-        row = c.execute("SELECT case_id, last_status FROM converge_cases WHERE serial=?",
+        row = c.execute("SELECT case_id, handoff_id, incident_id, last_status FROM converge_cases WHERE serial=?",
                         (serial,)).fetchone()
     except Exception:
         row = None
