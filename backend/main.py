@@ -495,10 +495,23 @@ def build_verdict(serial: str):
     verdict, display = verdict_for(findings)
     if not prod:
         verdict, display = "UNKNOWN", "Unknown serial"
-    checks = [{"id": "LOT_COMMITMENT",
-               "status": "pass" if lp.get("status") == "pass" else ("na" if not prod else "fail"),
+    r03 = next((f for f in findings if f.rule_id == "R03"), None)
+    r09 = next((f for f in findings if f.rule_id == "R09"), None)
+    lot_status = "pass" if lp.get("status") == "pass" else ("na" if not prod else "fail")
+    checks = [{"id": "LOT_COMMITMENT", "status": lot_status,
+               "reason": (r03.reason if r03 else
+                          "Serial committed under on-chain lot root" if lot_status == "pass" else
+                          "No lot record for this serial"),
+               "evidence_refs": (r03.evidence_refs if r03 else
+                                  [lp.get("root", "")] if lp.get("root") else [serial]),
+               "next_step": (r03.next_step if r03 else
+                             "None" if lot_status == "pass" else
+                             "Quarantine unit; check enrolment"),
                "evidence": {"root": lp.get("root"), "proof_len": len(lp.get("proof", []))}},
-              {"id": "CHAIN_INTEGRITY", "status": "fail" if any(f.rule_id == "R09" for f in findings) else "pass"}]
+              {"id": "CHAIN_INTEGRITY", "status": "fail" if r09 else "pass",
+               "reason": (r09.reason if r09 else "Event hash chain links verify"),
+               "evidence_refs": (r09.evidence_refs if r09 else []),
+               "next_step": (r09.next_step if r09 else "None")}]
     for f in findings:
         checks.append({"id": f.rule_id, "status": "fail", "severity": f.severity,
                        "reason": f.reason, "evidence_refs": f.evidence_refs, "next_step": f.next_step})
