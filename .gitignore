@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
-*.db
+*.db*
 anchors.json
 /tmp/
 .env
+
+converge_outbox.jsonl
+besu-qbft/data

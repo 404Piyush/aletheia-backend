@@ -314,9 +314,8 @@ def bundle(serial: str):
     evs = _events(c, serial)
     lp = _lot_proof(c, serial)
     return {"serial": serial, "events": evs, "lot_proof": lp,
-            "chain": {"rpc": os.environ.get("CHAIN_RPC", "local"),
-                      "contract": os.environ.get("CONTRACT", "local-mimic"),
-                      "anchors": _load_anchors()},
+            "chain": {**ch.chain_info(),
+                      "rpc": os.environ.get("CHAIN_RPC", "http://localhost:9545")},
             "verdict": build_verdict(serial)}
 
 
