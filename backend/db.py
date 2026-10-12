@@ -34,8 +34,10 @@ CREATE TABLE IF NOT EXISTS incidents(
   serial TEXT PRIMARY KEY, severity TEXT, status TEXT, findings_json TEXT, updated_ts INTEGER
 );
 CREATE TABLE IF NOT EXISTS batches(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, root TEXT, count INTEGER, tx TEXT, ts INTEGER
+  id INTEGER PRIMARY KEY AUTOINCREMENT, root TEXT, count INTEGER, tx TEXT, ts INTEGER,
+  aid INTEGER
 );
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, val INTEGER);
 CREATE TABLE IF NOT EXISTS converge_cases(
   serial TEXT PRIMARY KEY, case_id TEXT, ts INTEGER, last_status TEXT
 );
@@ -51,5 +53,12 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     cols = [r["name"] for r in con.execute("PRAGMA table_info(incidents)").fetchall()]
     if "findings" in cols and "findings_json" not in cols:
         con.execute("ALTER TABLE incidents RENAME COLUMN findings TO findings_json")
+        con.commit()
+    bcols = [r["name"] for r in con.execute("PRAGMA table_info(batches)").fetchall()]
+    if "aid" not in bcols:
+        # Pre-audit rows predate stored chain anchor ids; the old
+        # batch_id-1 arithmetic is wrong after any DB reset (chain keeps
+        # counting), so old rows honestly report aid NULL.
+        con.execute("ALTER TABLE batches ADD COLUMN aid INTEGER")
         con.commit()
     return con

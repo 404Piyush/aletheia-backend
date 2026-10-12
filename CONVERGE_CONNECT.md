@@ -54,8 +54,14 @@ Contract: redeployed on every cold restart — read the live address from `GET /
 
 All JSON. CORS restricted to our frontends + public URL (see `CORS_ORIGINS` env).
 No auth on read-only demo endpoints. State-changing and debug endpoints
-(`/seed/*`, `/redteam/*`, `/signer/sign`, `/anchor/document` without
-`ANCHOR_API_KEY`) are localhost-only.
+(`/seed/*`, `/redteam/*`, `/signer/sign`, `/anchor/run`, `/anchor/document` without
+`ANCHOR_API_KEY`) are localhost-only (verified: public-tunnel calls get `403`).
+
+Limits your client should respect: serials ≤128 chars (`422` beyond);
+unknown/invented serials share a 50-per-10min budget (`429`, back off);
+`POST /converge/case`-side dispatch is throttled (one per ~3s);
+`GET /lots/{unknown}/blast-radius` returns zeros + nulls (no `404` — handle it);
+pre-audit batch rows report `anchor_id: null` (use `tx`).
 
 ```bash
 BASE=https://continuity.404piyush.me   # live public API (or http://localhost:8000 via Option A)

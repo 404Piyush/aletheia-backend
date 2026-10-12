@@ -10,7 +10,7 @@ from contextvars import ContextVar
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .crypto import event_hash, sign_event, verify_event, GENESIS_PREV, to_hex
 from .db import connect
@@ -38,7 +38,7 @@ MAX_TS_SKEW_FUTURE = 300  # reject timestamps >5 min ahead (timeline poisoning)
 @app.get("/")
 def root():
     return {"service": "trust-fabric", "docs": "/docs", "health": "/converge/health",
-            "chain": ch.chain_info()}
+            "chain": safe_chain_info()}
 
 
 @app.get("/health")
@@ -47,7 +47,7 @@ def health():
     evts = c.execute("SELECT COUNT(*) n FROM events").fetchone()["n"]
     inc = c.execute("SELECT COUNT(*) n FROM incidents WHERE status='open'").fetchone()["n"]
     return {"status": "ok", "service": "trust-fabric", "events": evts,
-            "open_incidents": inc, "chain": ch.chain_info()}
+            "open_incidents": inc, "chain": safe_chain_info()}
 
 
 _db_lock = threading.Lock()
@@ -90,6 +90,41 @@ def require_local(request: Request):
     host = request.client.host if request.client else ""
     if host not in _LOCAL_HOSTS:
         raise HTTPException(403, "localhost only")
+
+
+def _cap_serial(serial: str) -> str:
+    # Partner- and public-facing GETs must not bank unbounded strings into
+    # unknown_attempts rows (storage farming) or incident payloads.
+    if len(serial) > 128:
+        raise HTTPException(422, "serial too long (<=128 chars)")
+    return serial
+
+
+def safe_chain_info() -> dict:
+    """chain_info() raises when Besu hiccups; read paths (incl. partner
+    verify/bundle) must degrade with a flag, not 500."""
+    try:
+        return ch.chain_info()
+    except Exception:
+        return {"mode": "besu-qbft" if ch.USE_CHAIN else "local-mimic",
+                "reachable": False}
+
+
+_DISPATCH_MIN_GAP = 3  # seconds between /converge/case dispatches
+
+
+def _dispatch_allowed(c) -> bool:
+    """Global dispatch throttle: each dispatch holds the DB lock through up
+    to 16s of partner timeouts, so unauthenticated spam could wedge the API.
+    DB-backed so it holds across workers."""
+    now = int(time.time())
+    row = c.execute("SELECT val FROM meta WHERE key='last_dispatch'").fetchone()
+    if row and now - row["val"] < _DISPATCH_MIN_GAP:
+        return False
+    c.execute("INSERT INTO meta(key,val) VALUES('last_dispatch',?) "
+              "ON CONFLICT(key) DO UPDATE SET val=excluded.val", (now,))
+    c.commit()
+    return True
 
 
 # ---------- models ----------
@@ -464,17 +499,17 @@ def get_incident(serial: str):
 def verify(serial: str | None = None):
     if not serial:
         raise HTTPException(422, "serial required")
-    return build_verdict(serial)
+    return build_verdict(_cap_serial(serial))
 
 
 @app.get("/products/{serial}/bundle")
 def bundle(serial: str):
+    serial = _cap_serial(serial)
     c = con()
     evs = _events(c, serial)
     lp = _lot_proof(c, serial)
     return {"serial": serial, "events": evs, "lot_proof": lp,
-            "chain": {**ch.chain_info(),
-                      "rpc": os.environ.get("CHAIN_RPC", "http://localhost:9545")},
+            "chain": safe_chain_info(),
             "verdict": build_verdict(serial)}
 
 
@@ -488,7 +523,10 @@ def _load_anchors():
 
 
 @app.post("/anchor/run")
-def anchor_run():
+def anchor_run(request: Request):
+    # Operator tooling (chain writes + batch churn): not partner-facing,
+    # localhost-only like the other state-changing debug endpoints.
+    require_local(request)
     from .merkle import root_of as _r
     c = con()
     rows = c.execute("SELECT id, event_hash FROM events WHERE batch_id IS NULL ORDER BY id LIMIT 10").fetchall()
@@ -498,8 +536,8 @@ def anchor_run():
     # leaves are already hashes; merkle re-hashes — for audit consistency hash the hex bytes
     root = "0x" + _r([bytes.fromhex(r["event_hash"][2:]) for r in rows]).hex()
     aid, tx = ch.anchor_batch(root, len(rows))
-    c.execute("INSERT INTO batches(root,count,tx,ts) VALUES(?,?,?,?)",
-              (root, len(rows), tx, int(time.time())))
+    c.execute("INSERT INTO batches(root,count,tx,ts,aid) VALUES(?,?,?,?,?)",
+              (root, len(rows), tx, int(time.time()), aid))
     bid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
     for r in rows:
         c.execute("UPDATE events SET batch_id=? WHERE id=?", (bid, r["id"]))
@@ -651,22 +689,29 @@ def blast_radius(lot_id: str):
 @app.get("/products/{serial}/anchor")
 def serial_anchor(serial: str):
     """Latest batch anchor covering this serial + lot root + chain head (for UI proof panel)."""
+    serial = _cap_serial(serial)
     c = con()
     row = c.execute(
         "SELECT batch_id FROM events WHERE serial=? AND batch_id IS NOT NULL ORDER BY batch_id DESC LIMIT 1",
         (serial,)).fetchone()
     if not row:
         return {"serial": serial, "anchored": False, "lot": _lot_proof(c, serial),
-                "chain": ch.chain_info()}
+                "chain": safe_chain_info()}
     b = c.execute("SELECT * FROM batches WHERE id=?", (row["batch_id"],)).fetchone()
-    info = ch.chain_info()
+    if not b:
+        return {"serial": serial, "anchored": False, "note": "batch row missing",
+                "lot": _lot_proof(c, serial), "chain": safe_chain_info()}
+    info = safe_chain_info()
     head = None
-    if ch.USE_CHAIN:
+    if ch.USE_CHAIN and info.get("reachable", True):
         try:
             head = ch._w3.eth.block_number
         except Exception:
             pass
-    return {"serial": serial, "anchored": True, "anchor_id": row["batch_id"] - 1,
+    # aid is the chain-side anchor id stored at anchor time. Pre-audit rows
+    # have aid NULL (the old batch_id-1 arithmetic breaks after any DB reset,
+    # because the chain keeps counting) — the per-row tx hash stays the truth.
+    return {"serial": serial, "anchored": True, "anchor_id": b["aid"],
             "root": b["root"], "count": b["count"], "tx": b["tx"],
             "block": head, "lot": _lot_proof(c, serial), "chain": info}
 
@@ -680,18 +725,23 @@ def anchor_doc(body: dict, request: Request, x_api_key: str | None = Header(defa
     else:
         require_local(request)
     h = body.get("doc_hash", "")
+    if not isinstance(h, str) or len(h) > 256:
+        raise HTTPException(422, "doc_hash must be a short hex string (<=256 chars)")
     aid, tx = ch.anchor_batch(h if h.startswith("0x") else "0x" + hashlib.sha256(h.encode()).hexdigest(), 1)
     return {"anchor_id": aid, "tx": tx}
 
 
 class ConvergeIn(BaseModel):
-    serial: str
+    serial: str = Field(max_length=128)
 
 
 @app.post("/converge/case")
 def converge_case(body: ConvergeIn, request: Request):
     """Push current verdict+bundle to partner handoff platform (queues if down)."""
     from . import convergence as cv
+    c0 = con()
+    if not _dispatch_allowed(c0):
+        raise HTTPException(429, "dispatch throttled (one case per few seconds); retry shortly")
     v = build_verdict(body.serial)
     public = os.environ.get("PUBLIC_BASE", "https://continuity.404piyush.me").rstrip("/")
     bundle_url = f"{public}/products/{body.serial}/bundle"
@@ -703,7 +753,7 @@ def converge_case(body: ConvergeIn, request: Request):
                    if isinstance(p, dict) else None)
             c = con()
             c.execute("INSERT OR REPLACE INTO converge_cases(serial,case_id,ts,last_status) VALUES(?,?,?,?)",
-                      (body.serial, str(cid or ""), int(time.time()), "open"))
+                      (body.serial, cv.valid_case_id(cid), int(time.time()), "open"))
             c.commit()
         except Exception:
             pass

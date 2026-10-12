@@ -3,6 +3,7 @@ Graceful: partner down → payload queued to converge_outbox.jsonl (demo via tra
 No shared DB, API keys only."""
 import json
 import os
+import re
 import time
 
 import httpx
@@ -115,24 +116,58 @@ def dispatch_case(serial: str, verdict: dict, bundle_url: str) -> dict:
         r = httpx.post(f"{PARTNER_BASE}/api/convergence/incidents", json=incident,
                        headers={"Content-Type": "application/json", "X-User-Id": PARTNER_USER},
                        timeout=8.0)
-        if r.status_code in (200, 201):
-            return {"ok": True, "via": "incidents", "partner": r.json()}
     except Exception:
-        pass
+        return _try_handoffs(serial, verdict, bundle_url, incident)
+    if r.status_code in (200, 201):
+        # Defensive parse: a 200 with a non-JSON body must NOT fall through
+        # to /api/handoffs (that double-delivers one alert as two cases).
+        try:
+            partner = r.json()
+        except Exception:
+            partner = {"status": r.status_code, "text": r.text[:300]}
+        return {"ok": True, "via": "incidents", "partner": partner}
+    if r.status_code == 429 or r.status_code >= 500:
+        # Transient: retry via the legacy channel.
+        return _try_handoffs(serial, verdict, bundle_url, incident)
+    # 4xx (and friends): the partner explicitly rejected our schema.
+    # Retrying a DIFFERENT schema at /api/handoffs would report `ok` for an
+    # alert the partner refused — surface the rejection instead.
+    return {**_queue(incident, f"partner rejected incident ({r.status_code}): {r.text[:200]}"),
+            "rejected": True, "via": "incidents"}
+
+
+def _try_handoffs(serial: str, verdict: dict, bundle_url: str, incident: dict) -> dict:
     payload = build_case_payload(serial, verdict, bundle_url)
     try:
         r = httpx.post(f"{PARTNER_BASE}/api/handoffs", json=payload,
                        headers={"Content-Type": "application/json", "X-User-Id": PARTNER_USER},
                        timeout=8.0)
         if r.status_code in (200, 201):
-            return {"ok": True, "via": "handoffs", "partner": r.json()}
-        return _queue(incident, f"partner HTTP {r.status_code}: {r.text[:200]}")
+            try:
+                partner = r.json()
+            except Exception:
+                partner = {"status": r.status_code, "text": r.text[:300]}
+            return {"ok": True, "via": "handoffs", "partner": partner}
+        return _queue(payload, f"partner HTTP {r.status_code}: {r.text[:200]}")
     except Exception as e:
         return _queue(incident, f"partner unreachable: {type(e).__name__}")
 
 
+_CASE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def valid_case_id(cid: str | None) -> str:
+    """Partner-controlled ids are stored and later interpolated into an
+    outbound URL path — accept only a tight charset, else empty."""
+    if cid and _CASE_ID_RE.fullmatch(str(cid)):
+        return str(cid)
+    return ""
+
+
 def case_detail(case_id: str, timeout: float = 5.0) -> dict | None:
     """His case state: GET /api/convergence/cases/{id}."""
+    if not valid_case_id(case_id):
+        return None
     try:
         r = httpx.get(f"{PARTNER_BASE}/api/convergence/cases/{case_id}", timeout=timeout)
         if r.status_code == 200:
@@ -150,8 +185,9 @@ def case_status(serial: str) -> dict:
         items = r.json() if isinstance(r.json(), list) else r.json().get("handoffs", [])
         hits = [h for h in items if isinstance(h, dict) and h.get("serial") == serial]
         if not hits:
-            # fallback: substring over the payload (partner schema may vary)
-            hits = [h for h in items if serial in json.dumps(h)]
+            # fallback: substring over the payload (partner schema may vary).
+            # Cap the scan: a hostile/huge handoff list must not pin a worker.
+            hits = [h for h in items[:300] if serial in json.dumps(h)]
         return {"ok": True, "matches": hits}
     except Exception as e:
         return {"ok": False, "reason": f"partner unreachable: {type(e).__name__}"}
