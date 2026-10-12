@@ -72,6 +72,11 @@ def con() -> sqlite3.Connection:
 @app.middleware("http")
 async def _serialize_db(request: Request, call_next):
     # SQLite demo store: one request at a time, always release connections.
+    # /debug/threads is the wedge-breaker glass: it must answer even when a
+    # worker is stuck holding the lock, so it bypasses the lock entirely
+    # (it touches no DB state).
+    if request.url.path == "/debug/threads":
+        return await call_next(request)
     t0 = time.time()
     acquired = _db_lock.acquire(timeout=_LOCK_TIMEOUT_S)
     if not acquired:
@@ -844,6 +849,7 @@ def converge_case(body: ConvergeIn, request: Request):
 
 @app.get("/converge/status")
 def converge_status(serial: str):
+    from concurrent.futures import ThreadPoolExecutor
     from . import convergence as cv
     try:
         c = con()
@@ -851,11 +857,18 @@ def converge_status(serial: str):
                         (serial,)).fetchone()
     except Exception:
         row = None
+    # case_detail + case_status are independent partner calls (~17s each on
+    # his box); run concurrently so one status check holds the lock ~25s,
+    # not ~50s sequential.
     live = None
-    if row and row["case_id"]:
-        live = cv.case_detail(row["case_id"])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_live = pool.submit(cv.case_detail, row["case_id"]) if row and row["case_id"] else None
+        f_matches = pool.submit(cv.case_status, serial)
+        if f_live is not None:
+            live = f_live.result()
+        matches = f_matches.result()
     return {"serial": serial, "tracked": dict(row) if row else None,
-            "live": live, **cv.case_status(serial)}
+            "live": live, **matches}
 
 
 @app.get("/converge/health")
