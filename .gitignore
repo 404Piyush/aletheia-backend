@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.db
+anchors.json
+/tmp/
+.env

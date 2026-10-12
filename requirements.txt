@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pynacl
+web3
+eth-account
+pyjwt
+qrcode
+pyyaml
+slowapi
+pyotp
+pytest
+httpx

@@ -1,0 +1,6 @@
+max_travel_kmh: 900
+air_max_kmh: 900
+ground_max_kmh: 200
+secret_burst_n: 5
+secret_burst_window_s: 600
+batch_size: 10
