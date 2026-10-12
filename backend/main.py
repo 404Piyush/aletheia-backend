@@ -142,11 +142,16 @@ def create_lot(lot: LotIn):
               "biz_step": "commissioning", "to_actor": None,
               "prev_hash": GENESIS_PREV, "ref_hash": None, "seq": 0}
         ev["event_hash"] = event_hash(ev)
-        ev.update({"signature": "demo:manufacturer", "signer": lot.manufacturer})
+        from . import signer as _signer
+        try:
+            _s = _signer.sign_for(lot.manufacturer, ev)
+            ev.update({"signature": _s["signature"], "signer": _s["signer"]})
+        except Exception:
+            ev.update({"signature": "demo:manufacturer", "signer": lot.manufacturer})
         c.execute(
         "INSERT INTO events(serial,type,actor,ts,lat_mdeg,lon_mdeg,biz_step,to_actor,prev_hash,ref_hash,seq,event_hash,signature,signer,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (s, "MANUFACTURED", lot.manufacturer, ev["ts"], None, None, "commissioning", None,
-         GENESIS_PREV, None, 0, ev["event_hash"], "demo:manufacturer", lot.manufacturer, json.dumps(ev)))
+         GENESIS_PREV, None, 0, ev["event_hash"], ev["signature"], ev["signer"], json.dumps(ev)))
         c.execute("UPDATE products SET status='ACTIVE', current_custodian=? WHERE serial=?",
                   (lot.manufacturer, s))
     c.commit()
@@ -193,9 +198,20 @@ def sign_event_api(e: EventIn):
                 "lat_mdeg": lat_mdeg, "lon_mdeg": lon_mdeg, "biz_step": e.biz_step,
                 "to_actor": e.to_actor, "prev_hash": None, "ref_hash": head_h, "seq": None}
     body["event_hash"] = event_hash(body)
-    # prototype: accept demo signatures; real verify if signer key known
-    sig = e.signature or f"demo:{e.actor}"
-    signer = e.signer or e.actor
+    from . import signer as _signer
+    if e.signature:
+        probe = dict(body, signature=e.signature, signer=e.signer or e.actor)
+        if not verify_event(probe):
+            raise HTTPException(401, "bad signature for signer")
+        sig, signer = e.signature, e.signer or e.actor
+    else:
+        row = c.execute("SELECT pubkey FROM actors WHERE did=? AND active=1",
+                        (e.actor,)).fetchone()
+        if row and row["pubkey"] == _signer.pubkey_hex(e.actor):
+            signed = _signer.sign_for(e.actor, body)
+            sig, signer = signed["signature"], signed["signer"]
+        else:
+            sig, signer = f"unsigned:{e.actor}", e.signer or e.actor
     try:
         c.execute(
             "INSERT INTO events(serial,type,actor,ts,lat_mdeg,lon_mdeg,biz_step,to_actor,prev_hash,ref_hash,seq,event_hash,signature,signer,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -643,9 +659,11 @@ def redteam(attack: str):
         return {"invented": out}
     if attack == "forge":
         try:
-            return sign_event_api(EventIn(serial="NOPE-000001", type="SCAN", actor="did:unknown", ts=base))
+            return sign_event_api(EventIn(serial=s, type="SCAN", actor="did:transporter1",
+                                          ts=base, signature="0x" + "ff" * 64,
+                                          signer="0x" + "ee" * 32))
         except HTTPException as ex:
-            return {"rejected": ex.detail, "rule": "R08"}
+            return {"rejected": ex.detail, "rule": "R08/R09", "code": ex.status_code}
     if attack == "handover":
         return sign_event_api(EventIn(serial=s, type="HANDOVER_OFFER", actor="did:attacker", ts=base, to_actor="did:attacker2"))
     if attack == "tamper":
@@ -663,11 +681,30 @@ def redteam(attack: str):
 
 @app.post("/seed/demo")
 def seed_demo():
-    create_lot(LotIn(lot_id="LOT-DEMO-A", size=10, manufacturer="did:maker1"))
+    from . import signer as _signer
     c = con()
     for did, role in (("did:maker1", "manufacturer"), ("did:transporter1", "transporter"),
                       ("did:retailer1", "retailer"), ("did:attacker", "transporter"),
                       ("did:attacker2", "retailer")):
-        c.execute("INSERT OR IGNORE INTO actors(did,pubkey,role) VALUES(?,?,?)", (did, did, role))
+        c.execute("INSERT OR REPLACE INTO actors(did,pubkey,role,active) VALUES(?,?,?,1)",
+                  (did, _signer.pubkey_hex(did), role))
     c.commit()
-    return {"seeded": True}
+    create_lot(LotIn(lot_id="LOT-DEMO-A", size=10, manufacturer="did:maker1"))
+    return {"seeded": True, "signer": "ed25519 device-simulator holds demo keys"}
+
+
+class SignIn(BaseModel):
+    did: str
+    payload: dict
+
+
+@app.get("/signer/pubkey/{did}")
+def signer_pubkey(did: str):
+    from . import signer as _signer
+    return {"did": did, "pubkey": _signer.pubkey_hex(did)}
+
+
+@app.post("/signer/sign")
+def signer_sign(body: SignIn):
+    from . import signer as _signer
+    return _signer.sign_for(body.did, body.payload)
