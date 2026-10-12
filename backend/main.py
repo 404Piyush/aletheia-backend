@@ -243,6 +243,10 @@ def build_verdict(serial: str):
         findings.append(f)
     # R03 lot inclusion
     lp = _lot_proof(c, serial) if prod else {"status": "unknown_serial"}
+    product = None
+    if prod:
+        product = {"lot_id": prod["lot_id"], "status": prod["status"],
+                   "custodian": prod["current_custodian"]}
     if lp.get("status") in ("fail", "not_in_lot"):
         findings.append(Finding("R03", "critical", "Serial fails Merkle inclusion vs on-chain lot root",
                                 [serial], "Quarantine unit; check enrolment"))
@@ -292,7 +296,7 @@ def build_verdict(serial: str):
         checks.append({"id": f.rule_id, "status": "fail", "severity": f.severity,
                        "reason": f.reason, "evidence_refs": f.evidence_refs, "next_step": f.next_step})
     return {"serial": serial, "verdict": verdict, "display": display, "risk_score": score,
-            "confidence": conf,
+            "confidence": conf, "product": product,
             "checks": checks,
             "uncertainty": ["Only %d observations" % len(evs)] if len(evs) < 3 else [],
             "next_steps": [f.next_step for f in findings][:3] or ["No action"],
@@ -443,6 +447,29 @@ def blast_radius(lot_id: str):
             "invented_attempts": inv, "produced": lot["size"] if lot else None,
             "overflow": bool(lot and inv > 0),
             "by_custodian": [{"actor": a, "status": s, "units": n} for (a, s), n in by_cust.items()]}
+
+
+@app.get("/products/{serial}/anchor")
+def serial_anchor(serial: str):
+    """Latest batch anchor covering this serial + lot root + chain head (for UI proof panel)."""
+    c = con()
+    row = c.execute(
+        "SELECT batch_id FROM events WHERE serial=? AND batch_id IS NOT NULL ORDER BY batch_id DESC LIMIT 1",
+        (serial,)).fetchone()
+    if not row:
+        return {"serial": serial, "anchored": False, "lot": _lot_proof(c, serial),
+                "chain": ch.chain_info()}
+    b = c.execute("SELECT * FROM batches WHERE id=?", (row["batch_id"],)).fetchone()
+    info = ch.chain_info()
+    head = None
+    if ch.USE_CHAIN:
+        try:
+            head = ch._w3.eth.block_number
+        except Exception:
+            pass
+    return {"serial": serial, "anchored": True, "anchor_id": row["batch_id"] - 1,
+            "root": b["root"], "count": b["count"], "tx": b["tx"],
+            "block": head, "lot": _lot_proof(c, serial), "chain": info}
 
 
 @app.post("/anchor/document")
