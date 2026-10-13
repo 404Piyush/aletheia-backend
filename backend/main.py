@@ -99,6 +99,15 @@ async def _serialize_db(request: Request, call_next):
     return resp
 
 
+@app.get("/hub", include_in_schema=False)
+def hub_page():
+    """Convergence Hub: bridge health, actor roster, tracked cases, dispatch.
+    Same-origin static page (session cookies just work, camera-safe https).
+    Dispatch enforces the operator session server-side."""
+    from fastapi.responses import FileResponse
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "hub.html"))
+
+
 @app.get("/act", include_in_schema=False)
 def act_page():
     """Phone act page (same-origin as the API: session cookies just work,

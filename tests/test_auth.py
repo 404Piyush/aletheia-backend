@@ -125,3 +125,10 @@ def test_session_binds_actor_no_spoof(monkeypatch):
     finally:
         c.close()
     assert row["actor"] == "did:maker1", dict(row)
+
+
+def test_hub_page_served():
+    r = client.get("/hub")
+    assert r.status_code == 200, r.status_code
+    assert "Convergence Hub" in r.text
+    assert "/converge/health" in r.text and "/converge/case" in r.text
