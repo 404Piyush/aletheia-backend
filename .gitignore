@@ -12,3 +12,7 @@ besu-qbft/data
 besu-qbft/validator.key
 besu-qbft/validator2.key
 besu-qbft/validator3.key
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore

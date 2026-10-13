@@ -2,50 +2,269 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#f4f1ea" />
 <title>Trust Fabric · Convergence Hub</title>
 <style>
-  :root { color-scheme: dark; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; background: #101418; color: #e8ecef; }
-  h1 { font-size: 20px; margin: 8px 0; }
-  .card { background: #1a2129; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
-  .row { display: flex; gap: 8px; margin: 8px 0; }
-  input, button { font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid #3a4653; }
-  input { background: #0d1117; color: #fff; flex: 1; min-width: 0; }
-  button { background: #2f81f7; color: #fff; border: none; font-weight: 600; flex: 1; }
-  button.ghost { background: #30363d; }
-  #log { white-space: pre-wrap; font-size: 13px; background: #0d1117; border-radius: 8px; padding: 8px; max-height: 240px; overflow-y: auto; }
-  .ok { color: #3fb950; } .bad { color: #f85149; } .mut { color: #d29922; }
-  table { width: 100%; font-size: 13px; border-collapse: collapse; }
-  td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid #30363d; }
-  .hint { font-size: 12px; color: #8b949e; }
-  .pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; }
-  .up { background: #12361f; color: #3fb950; } .down { background: #3d1113; color: #f85149; }
+  :root {
+    --canvas: #f4f1ea;
+    --surface-1: #fdfcf9;
+    --surface-2: #ece8dd;
+    --line: #ddd6c4;
+    --line-soft: #e7e1d2;
+    --line-strong: #1a1815;
+    --text-primary: #1a1815;
+    --text-secondary: #57534a;
+    --text-muted: #8d8778;
+    --accent: #b3271e;
+    --accent-hover: #931b14;
+    --accent-pressed: #741410;
+    --accent-pale: #8c1d15;
+    --accent-ink: #fdfcf9;
+    --accent-wash: rgba(179, 39, 30, 0.06);
+    --signal-good: #1c6b45;
+    --signal-watch: #7a5b00;
+    --signal-critical: #b3271e;
+    --signal-info: #205d99;
+    --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-display: "Inter Tight", "Inter", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --radius-panel: 2px;
+    --radius-control: 2px;
+    color-scheme: light;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -webkit-text-size-adjust: 100%;
+  }
+  .mono { font-family: var(--font-mono); font-size: 12px; line-height: 18px; }
+  .eyebrow {
+    font-size: 11px;
+    line-height: 15px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--text-muted);
+  }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 20px 14px 60px; }
+  .page-head { margin-bottom: 18px; }
+  .kicker { display: flex; align-items: center; gap: 10px; }
+  .rule-accent { width: 28px; height: 3px; background: var(--accent); flex: none; }
+  .page-head h1 {
+    font-family: var(--font-display);
+    font-size: 27px;
+    line-height: 32px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin: 10px 0 6px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .lede { color: var(--text-secondary); font-size: 13.5px; line-height: 21px; margin: 0; max-width: 68ch; }
+  .panel {
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-panel);
+    padding: 20px 22px;
+    margin-bottom: 20px;
+  }
+  .panel.ruled { border-top: 2px solid var(--line-strong); }
+  .panel h3 {
+    font-family: var(--font-display);
+    font-size: 15px;
+    line-height: 21px;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+    margin: 0 0 4px;
+  }
+  .panel .hint, .hint { color: var(--text-muted); font-size: 12.5px; line-height: 19px; margin: 0 0 8px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10.5px;
+    font-weight: 700;
+    line-height: 15px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border: 1px solid var(--line-strong);
+    border-radius: 2px;
+    padding: 2px 8px;
+    background: var(--surface-1);
+    white-space: nowrap;
+  }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; border: 1px solid var(--line-strong); }
+  .badge.good { background: #e4ece4; color: #175c39; border-color: #175c39; }
+  .badge.good .dot { background: var(--signal-good); border-color: var(--signal-good); }
+  .badge.watch { background: #f0e6c8; color: #635204; border-color: #635204; }
+  .badge.watch .dot { background: var(--signal-watch); border-color: var(--signal-watch); }
+  .badge.critical { background: var(--accent); border-color: var(--accent-pressed); color: #fff; }
+  .badge.critical .dot { background: #fff; border-color: #fff; }
+  .badge.neutral { color: var(--text-secondary); border-color: var(--line); }
+  .badge.neutral .dot { background: var(--text-muted); border-color: var(--text-muted); }
+  .btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 48px;
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    border-radius: var(--radius-control);
+    border: 1px solid var(--line-strong);
+    padding: 10px 16px;
+    cursor: pointer;
+    font-family: var(--font-sans);
+    white-space: nowrap;
+    flex: 1;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent-pressed); color: var(--accent-ink); }
+  .btn.primary:hover { background: var(--accent-hover); }
+  .btn.secondary { background: var(--surface-1); color: var(--text-primary); border-color: var(--line-strong); }
+  .btn.secondary:hover { background: var(--surface-2); }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--text-secondary); box-shadow: none; }
+  .btn.ghost:hover { color: var(--accent); border-color: var(--line); }
+  .btn:active { transform: translateY(1px); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+  .field label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); margin-bottom: 6px; }
+  .field input {
+    width: 100%;
+    background: var(--surface-1);
+    border: 2px solid var(--line-strong);
+    border-radius: 2px;
+    color: var(--text-primary);
+    padding: 12px;
+    font-family: var(--font-mono);
+    font-size: 16px;
+    min-height: 48px;
+  }
+  .field input::placeholder { color: var(--text-muted); font-family: var(--font-sans); font-size: 14px; }
+  .row { display: flex; gap: 10px; margin: 12px 0 0; flex-wrap: wrap; }
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 7px 16px; margin: 12px 0 0; }
+  .kv dt { color: var(--text-muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; padding-top: 2px; }
+  .kv dd { margin: 0; min-width: 0; border-bottom: 1px dotted var(--line); padding-bottom: 7px; overflow-wrap: anywhere; }
+  .kv dd.mono { font-size: 12.5px; }
+  .hashrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 6px 6px 6px 10px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    margin-top: 8px;
+  }
+  .hashrow .val { flex: 1; min-width: 0; }
+  .table-wrap { overflow-x: auto; border-top: 1px solid var(--line-strong); margin-top: 12px; }
+  #actors table, table.queue { width: 100%; border-collapse: collapse; font-size: 13px; }
+  #actors th, .queue th {
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--line);
+    padding: 8px 12px 8px 0;
+    white-space: nowrap;
+  }
+  #actors td, .queue td {
+    padding: 10px 12px 10px 0;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  #actors tbody tr:last-child td { border-bottom: 0; }
+  #case { margin-top: 12px; }
+  #case .hashrow { margin-top: 8px; }
+  #log {
+    background: #211e19;
+    border: 1px solid var(--line-strong);
+    border-radius: 2px;
+    padding: 13px 15px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 19px;
+    max-height: 240px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: #e6e0d2;
+    min-height: 96px;
+  }
+  #log .ok { color: #7fd79b; }
+  #log .bad { color: #e8a09a; }
+  #log .mut { color: #c9b98a; }
+  .ok { color: var(--signal-good); }
+  .bad { color: var(--signal-critical); }
+  .mut { color: var(--signal-watch); }
+  .footer-note { color: var(--text-muted); font-size: 12px; margin-top: 28px; line-height: 19px; border-top: 1px solid var(--line); padding-top: 14px; }
+  .source-line { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin: 10px 0 0; }
 </style>
 </head>
 <body>
-<h1>Convergence Hub <span id="bridge" class="pill down">checking…</span></h1>
-<div class="card">
-  <h3 style="margin:0 0 6px">Bridge — us ↔ CONTINUITY</h3>
-  <div id="bridge-body" class="hint">loading…</div>
-  <div class="row"><button id="refresh" class="ghost">Refresh</button></div>
+<div class="wrap">
+  <header class="page-head">
+    <div class="kicker">
+      <span class="rule-accent" aria-hidden="true"></span>
+      <span class="eyebrow">Trust Fabric · Convergence bridge</span>
+    </div>
+    <h1>Convergence Hub <span id="bridge" class="badge neutral"><span class="dot" aria-hidden="true"></span>checking…</span></h1>
+    <p class="lede">Bridge health, actor roster, tracked cases, and dispatch — us ↔ CONTINUITY.</p>
+  </header>
+
+  <section class="panel ruled" aria-label="Bridge status">
+    <p class="eyebrow">§01 · Bridge — us ↔ CONTINUITY</p>
+    <h3>Bridge status</h3>
+    <div id="bridge-body" class="hint">loading…</div>
+    <div class="row"><button id="refresh" class="btn secondary" type="button">Refresh</button></div>
+  </section>
+
+  <section class="panel" aria-label="Actor roster">
+    <p class="eyebrow">§02 · Identity map</p>
+    <h3>Actor roster (DID → partner user)</h3>
+    <div id="actors" class="hint">loading…</div>
+  </section>
+
+  <section class="panel" aria-label="Tracked cases">
+    <p class="eyebrow">§03 · Case tracking</p>
+    <h3>Tracked cases</h3>
+    <div class="field">
+      <label for="serial">Serial</label>
+      <input id="serial" placeholder="serial — e.g. LOT-DEMO-A-000001" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="row">
+      <button id="track" class="btn primary" type="button">Track case</button>
+      <button id="dispatch" class="btn secondary" type="button">Dispatch (operator)</button>
+    </div>
+    <div id="case" class="hint">no case loaded</div>
+  </section>
+
+  <section class="panel" aria-label="Event log">
+    <p class="eyebrow">§04 · Evidence trail</p>
+    <h3>Log</h3>
+    <div id="log" role="log" aria-live="polite"></div>
+  </section>
+
+  <p class="footer-note">Bridge states are observed, never assumed — BRIDGE UP means the partner answered this check. Dispatch is an operator action and is throttled.</p>
 </div>
-<div class="card">
-  <h3 style="margin:0 0 6px">Actor roster (DID → partner user)</h3>
-  <div id="actors" class="hint">loading…</div>
-</div>
-<div class="card">
-  <h3 style="margin:0 0 6px">Tracked cases</h3>
-  <div class="row">
-    <input id="serial" placeholder="serial — e.g. LOT-DEMO-A-000001" autocomplete="off" />
-  </div>
-  <div class="row">
-    <button id="track">Track case</button>
-    <button id="dispatch" class="ghost">Dispatch (operator)</button>
-  </div>
-  <div id="case" class="hint">no case loaded</div>
-</div>
-<div class="card"><div id="log"></div></div>
 <script>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
@@ -57,8 +276,15 @@
   };
   var pill = function (up, txt) {
     var b = $("bridge");
-    b.className = "pill " + (up ? "up" : "down");
-    b.textContent = txt;
+    var tone = txt === "ERROR" ? "watch" : (up ? "good" : "critical");
+    if (b.textContent === "checking…") tone = "neutral";
+    b.className = "badge " + tone;
+    b.innerHTML = "";
+    var dot = document.createElement("span");
+    dot.className = "dot";
+    dot.setAttribute("aria-hidden", "true");
+    b.appendChild(dot);
+    b.appendChild(document.createTextNode(txt));
   };
   var esc = function (s) { return String(s == null ? "" : s); };
   function refresh() {
@@ -79,8 +305,8 @@
         var rows = Object.keys(map).map(function (did) {
           return "<tr><td>" + esc(did) + "</td><td>" + esc(map[did]) + "</td></tr>";
         }).join("");
-        $("actors").innerHTML = "<table><tr><th>DID</th><th>partner user</th></tr>" + rows +
-          "</table><p class='hint'>source: " + esc(m.source) + "</p>";
+        $("actors").innerHTML = "<div class='table-wrap'><table class='queue'><tr><th>DID</th><th>partner user</th></tr>" + rows +
+          "</table></div><p class='source-line'>source: " + esc(m.source) + "</p>";
       }).catch(function (e) { $("actors").textContent = "roster failed: " + e; });
   }
   $("refresh").onclick = refresh;
