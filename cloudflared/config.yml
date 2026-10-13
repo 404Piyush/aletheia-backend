@@ -1,0 +1,6 @@
+tunnel: 20ed2484-a547-4186-852f-b4173ccfbcbb
+credentials-file: /Users/piyushutkar/.cloudflared/20ed2484-a547-4186-852f-b4173ccfbcbb.json
+ingress:
+  - hostname: continuity.404piyush.me
+    service: http://localhost:8000
+  - service: http_status:404
