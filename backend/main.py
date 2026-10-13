@@ -928,8 +928,14 @@ def converge_status(serial: str):
         f_live = pool.submit(cv.case_detail, row["case_id"]) if row and row["case_id"] else None
         f_matches = pool.submit(cv.case_status, serial)
         if f_live is not None:
-            live = f_live.result()
-        matches = f_matches.result()
+            try:
+                live = f_live.result(timeout=40)
+            except Exception:
+                live = None
+        try:
+            matches = f_matches.result(timeout=40)
+        except Exception:
+            matches = {'ok': False, 'reason': 'partner timeout'}
     return {"serial": serial, "tracked": dict(row) if row else None,
             "live": live, **matches}
 
@@ -944,7 +950,16 @@ def converge_health():
         f_map = pool.submit(cv.fetch_actor_map)
         f_up = pool.submit(cv.partner_up)
         f_bridge = pool.submit(cv.bridge_status)
-        m, up, bridge = f_map.result(), f_up.result(), f_bridge.result()
+        # Bounded: an unbounded .result() under the global DB lock re-creates
+        # the wedge (one stuck pool thread freezes the whole API).
+        def _get(f, fb):
+            try:
+                return f.result(timeout=40)
+            except Exception:
+                return fb
+        m = _get(f_map, {'source': 'timeout', 'map': dict(cv.ACTOR_MAP)})
+        up = _get(f_up, False)
+        bridge = _get(f_bridge, {'reachable': False, 'reason': 'timeout'})
     return {"partner_up": up, "bridge": bridge,
             "partner_base": cv.PARTNER_BASE, "project": cv.PARTNER_PROJECT,
             "actor_map_source": m["source"], "actor_map": m["map"]}
