@@ -93,6 +93,22 @@ pages). Live paths: `/verify/SHOW-000001` (VERIFIED + LIVE bundle notice),
 `403` localhost-only via tunnel ·
 `/debug/threads` localhost stack dump if anything ever wedges again.
 
+## 7. Sweep log 2026-10-13 (all rows pass)
+
+§1: VERIFIED 0 / bundle 3 events / clone 65 / forge 401 R08/R09 / replay
+409 / oversize 422. §2 (throwaways CLAIM-T2/T3): SOLD→CLAIMED→idempotent→
+CONTESTED(R12)→empty-session 422; recall freezes; frozen write 423. Note:
+recall freezes CONTESTED units (only CLAIMED is spared — correct, contested
+is not owned property). TREE intact 6/1/1, SHOW VERIFIED. §4 UI: all pages
+200, red-team 403 in chain mode, XSS inert, LIVE bundle notice correct.
+Destructive rows (clone/tamper/invented on live units, recall of demo lots)
+verified via automated suite instead — live demo state preserved.
+
+Environment lesson: this laptop swaps under load (29MB free observed) —
+Docker + IDEs + test runs starve the servers into 503 cascades. For judging:
+quiet machine, serial (not parallel) probing, and the 503-shed + restart
+runbook in §5. Lot creation takes ~35s when Besu is CPU-starved (normally ~2s).
+
 ## 6. How much is done (honest, 2026-10-13)
 
 Done: rules engine R01–R14 + scoring + 15 pinned tests; Ed25519 device
