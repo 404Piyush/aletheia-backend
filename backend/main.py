@@ -119,6 +119,24 @@ def require_redteam():
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 
 
+RBAC_OPEN = os.environ.get("RBAC_OPEN", "0") == "1"
+
+
+def require_role(request: Request, *allowed: str) -> str:
+    """Demo RBAC: state-changing endpoints need an operator role assertion.
+    Reads open to all; writes need `X-Role: operator`. Default role is
+    verifier (read-only). Every decision is logged. RBAC_OPEN=1 is the
+    on-stage panic button (logs that it is open)."""
+    role = (request.headers.get("x-role") or "verifier").strip().lower() or "verifier"
+    print(f"RBAC {request.method} {request.url.path} role={role} "
+          f"allowed={','.join(allowed)} open={RBAC_OPEN}", flush=True)
+    if RBAC_OPEN:
+        return role + "+open"
+    if role not in allowed:
+        raise HTTPException(403, f"role '{role}' is read-only; operator required")
+    return role
+
+
 def require_local(request: Request):
     """Demo-destructive endpoints (seed/reset, attack console, signing oracle)
     must not be reachable through the public tunnel."""
@@ -654,6 +672,7 @@ def _load_anchors():
 
 @app.post("/anchor/run")
 def anchor_run(request: Request):
+    require_role(request, "operator")
     # Operator tooling (chain writes + batch churn): not partner-facing,
     # localhost-only like the other state-changing debug endpoints.
     require_local(request)
@@ -695,7 +714,14 @@ def audit():
 
 
 @app.post("/products/{serial}/claim")
-def claim(serial: str, body: ClaimIn):
+def claim(serial: str, body: ClaimIn, request: Request):
+    require_role(request, "operator")
+    return _do_claim(serial, body)
+
+
+def _do_claim(serial: str, body: ClaimIn):
+    # Claim core shared with seed scripts (which run behind localhost-gated
+    # endpoints and carry no role header).
     c = con()
     session = (body.session_id or "").strip()
     if not session or len(session) > 128 or len(body.secret) > 256:
@@ -745,7 +771,8 @@ def claim(serial: str, body: ClaimIn):
 
 
 @app.post("/lots/{lot_id}/recall")
-def recall(lot_id: str):
+def recall(lot_id: str, request: Request):
+    require_role(request, "operator")
     c = con()
     try:
         ch.freeze_lot(lot_id, True)
@@ -848,6 +875,7 @@ def serial_anchor(serial: str):
 
 @app.post("/anchor/document")
 def anchor_doc(body: dict, request: Request, x_api_key: str | None = Header(default=None)):
+    require_role(request, "operator")
     key = os.environ.get("ANCHOR_API_KEY", "")
     if key:
         if x_api_key != key:
@@ -875,6 +903,7 @@ _DISPATCHABLE = {"CLONE_DETECTED", "TAMPERED", "SUSPICIOUS"}
 @app.post("/converge/case")
 def converge_case(body: ConvergeIn, request: Request):
     """Push current verdict+bundle to partner handoff platform (queues if down)."""
+    require_role(request, "operator")
     from . import convergence as cv
     v = build_verdict(body.serial)
     if v["verdict"] == "UNKNOWN":
@@ -1067,7 +1096,7 @@ def seed_tree(request: Request):
     sec3 = secrets.get(s3)
     claim_out = None
     if sec3:
-        claim_out = claim(s3, ClaimIn(secret=sec3, session_id="buyer1-session"))
+        claim_out = _do_claim(s3, ClaimIn(secret=sec3, session_id="buyer1-session"))
     # C-T2 (in P-T1): 000004 retailer->SOLD, 000005 stays ACTIVE at maker
     s4, s5 = serials[3], serials[4]
     _ev(s4, "HANDOVER_OFFER", mk, to=rt, ts=_t())
