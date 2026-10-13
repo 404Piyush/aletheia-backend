@@ -93,6 +93,20 @@ pages). Live paths: `/verify/SHOW-000001` (VERIFIED + LIVE bundle notice),
 `403` localhost-only via tunnel ·
 `/debug/threads` localhost stack dump if anything ever wedges again.
 
+## 8. RBAC (demo authz)
+
+Reads open to all. Writes need `X-Role: operator` (default role verifier =
+read-only). Gated: `POST /lots/*/recall`, `POST /converge/case`,
+`POST /anchor/*`, `POST /*/claim`. Every decision logged (`RBAC …` in server
+log). Panic button: `RBAC_OPEN=1` env opens all writes (logged).
+
+| # | Command | Expect |
+|---|---|---|
+| 8.1 | Recall without header | `403` role is read-only |
+| 8.2 | Same with `-H 'X-Role: operator'` | executes (⚠️ real side effect — use throwaways) |
+| 8.3 | UI: topbar Role select → Operator (sets `tt_role` cookie) | freeze/recall forms appear; verifier sees locked note |
+| 8.4 | UI verifier POST freeze | `403` page "Operator role required" |
+
 ## 7. Sweep log 2026-10-13 (all rows pass)
 
 §1: VERIFIED 0 / bundle 3 events / clone 65 / forge 401 R08/R09 / replay
