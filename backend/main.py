@@ -99,6 +99,15 @@ async def _serialize_db(request: Request, call_next):
     return resp
 
 
+@app.get("/act", include_in_schema=False)
+def act_page():
+    """Phone act page (same-origin as the API: session cookies just work,
+    camera allowed on https/localhost). No login needed to open; Offer/
+    Accept/Sell enforce the actor session server-side."""
+    from fastapi.responses import FileResponse
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "act.html"))
+
+
 @app.get("/debug/threads")
 def debug_threads(request: Request):
     """Localhost-only stack dump of every thread. If the server ever wedges
@@ -124,11 +133,22 @@ RBAC_OPEN = os.environ.get("RBAC_OPEN", "0") == "1"
 
 def require_role(request: Request, *allowed: str) -> str:
     """Demo RBAC: state-changing endpoints need an operator role assertion.
-    Reads open to all; writes need `X-Role: operator`. Default role is
-    verifier (read-only). Every decision is logged. RBAC_OPEN=1 is the
-    on-stage panic button (logs that it is open)."""
-    role = (request.headers.get("x-role") or "verifier").strip().lower() or "verifier"
-    print(f"RBAC {request.method} {request.url.path} role={role} "
+    Role comes from the login session cookie first, `X-Role` header second
+    (API/partner path); default is verifier (read-only). Every decision is
+    logged. RBAC_OPEN=1 is the on-stage panic button (logs that it is open)."""
+    from . import auth as _auth
+    role, via = "verifier", "default"
+    try:
+        sess = _auth.resolve(con(), request.cookies.get(_auth.SESSION_COOKIE))
+        if sess:
+            role, via = sess["role"], f"session:{sess['username']}"
+        else:
+            hdr = (request.headers.get("x-role") or "").strip().lower()
+            if hdr:
+                role, via = hdr, "header"
+    except Exception:
+        pass
+    print(f"RBAC {request.method} {request.url.path} role={role} via={via} "
           f"allowed={','.join(allowed)} open={RBAC_OPEN}", flush=True)
     if RBAC_OPEN:
         return role + "+open"
@@ -197,7 +217,7 @@ class LotIn(BaseModel):
 class EventIn(BaseModel):
     serial: str
     type: str
-    actor: str
+    actor: str | None = None
     ts: int | None = None
     lat: float | None = None
     lon: float | None = None
@@ -330,11 +350,11 @@ def _unknown_flood(c, lot_id: str) -> bool:
 
 
 @app.post("/events/sign")
-def sign_event_api(e: EventIn, skip_ts_bounds: bool = False):
+def sign_event_api(e: EventIn, request: Request, skip_ts_bounds: bool = False):
     c = con()
     # --- input validation (reject absurd/forged fields before touching state)
     now = int(time.time())
-    if len(e.serial) > 128 or len(e.actor) > 128 or (e.to_actor and len(e.to_actor) > 128):
+    if len(e.serial) > 128 or (e.actor and len(e.actor) > 128) or (e.to_actor and len(e.to_actor) > 128):
         raise HTTPException(422, "serial/actor too long")
     if e.counter is not None and not (0 <= e.counter <= 999999999):
         raise HTTPException(422, "counter out of range")
@@ -343,6 +363,21 @@ def sign_event_api(e: EventIn, skip_ts_bounds: bool = False):
     if len(e.biz_step) > 64:
         raise HTTPException(422, "biz_step too long")
     ts = e.ts or now
+    # Actor binding: a logged-in session's DID overrides any submitted actor
+    # (kills ?actor= spoofing on the act page); anonymous submissions keep
+    # their actor, defaulting to the shared consumer identity (registered,
+    # auto-signed observations — no login needed to scan).
+    actor = e.actor or "did:consumer1"
+    if request is not None:
+        from . import auth as _auth
+        try:
+            _sess = _auth.resolve(c, request.cookies.get(_auth.SESSION_COOKIE))
+        except Exception:
+            _sess = None
+        if _sess and _sess["did"] != actor:
+            print(f"ACTOR-BIND {e.serial} {actor} -> {_sess['did']} ({_sess['username']})", flush=True)
+            actor = _sess["did"]
+    e = e.model_copy(update={"actor": actor})
     # skip_ts_bounds is Python-internal only (never a request field): the
     # localhost-gated redteam console must be able to stage attacks with
     # future-dated scans (e.g. the clone button's travel pair). Public
@@ -894,6 +929,46 @@ class ConvergeIn(BaseModel):
     force: bool = False
 
 
+class LoginIn(BaseModel):
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=256)
+
+
+@app.post("/auth/login")
+def auth_login(body: LoginIn, request: Request):
+    """Actor login (maker/distributor/retailer). Sets httpOnly session cookie.
+    Consumers never log in — verify/bundle/consumer-scan stay open."""
+    from . import auth as _auth
+    from fastapi.responses import JSONResponse
+    out = _auth.login(con(), body.username, body.password)
+    if not out:
+        raise HTTPException(401, "bad credentials")
+    resp = JSONResponse({"username": out["username"], "did": out["did"], "role": out["role"]})
+    resp.set_cookie(_auth.SESSION_COOKIE, out["token"], httponly=True, samesite="lax",
+                    max_age=_auth.SESSION_TTL_S)
+    return resp
+
+
+@app.post("/auth/logout")
+def auth_logout(request: Request):
+    from . import auth as _auth
+    from fastapi.responses import JSONResponse
+    _auth.logout(con(), request.cookies.get(_auth.SESSION_COOKIE))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(_auth.SESSION_COOKIE)
+    return resp
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    """Who am I (did + role) for the act page. Anonymous → verifier, no did."""
+    from . import auth as _auth
+    sess = _auth.resolve(con(), request.cookies.get(_auth.SESSION_COOKIE))
+    if sess:
+        return {"anonymous": False, **sess}
+    return {"anonymous": True, "role": "verifier", "did": None}
+
+
 # Verdicts worth paging the partner's custodians about (their incident enum,
 # PDF 2.1). Pushing a VERIFIED unit would open a junk handoff + Besu anchor
 # + 3 recall tasks on his box; require explicit force for that.
@@ -1012,15 +1087,15 @@ def redteam(attack: str, request: Request):
     s = row["serial"]
     base = int(time.time())
     if attack == "clone":
-        sign_event_api(EventIn(serial=s, type="SCAN", actor="did:attacker", ts=base, lat=19.07, lon=72.87))
-        sign_event_api(EventIn(serial=s, type="HANDOVER_OFFER", actor="did:attacker", ts=base + 600, to_actor="did:attacker2"), skip_ts_bounds=True)
-        return sign_event_api(EventIn(serial=s, type="SCAN", actor="did:attacker2", ts=base + 1200, lat=28.61, lon=77.20), skip_ts_bounds=True)
+        sign_event_api(EventIn(serial=s, type="SCAN", actor="did:attacker", ts=base, lat=19.07, lon=72.87), request=None)
+        sign_event_api(EventIn(serial=s, type="HANDOVER_OFFER", actor="did:attacker", ts=base + 600, to_actor="did:attacker2"), request=None, skip_ts_bounds=True)
+        return sign_event_api(EventIn(serial=s, type="SCAN", actor="did:attacker2", ts=base + 1200, lat=28.61, lon=77.20), request=None, skip_ts_bounds=True)
     if attack == "invented":
         out = []
         for i in range(5):
             fake = f"{row['lot_id']}-FAKE{i:04d}"
             try:
-                sign_event_api(EventIn(serial=fake, type="SCAN", actor="did:attacker", ts=base))
+                sign_event_api(EventIn(serial=fake, type="SCAN", actor="did:attacker", ts=base), request=None)
             except HTTPException as ex:
                 out.append({"serial": fake, "rejected": ex.detail})
         return {"invented": out}
@@ -1028,11 +1103,11 @@ def redteam(attack: str, request: Request):
         try:
             return sign_event_api(EventIn(serial=s, type="SCAN", actor="did:transporter1",
                                           ts=base, signature="0x" + "ff" * 64,
-                                          signer="0x" + "ee" * 32))
+                                          signer="0x" + "ee" * 32), request=None)
         except HTTPException as ex:
             return {"rejected": ex.detail, "rule": "R08/R09", "code": ex.status_code}
     if attack == "handover":
-        return sign_event_api(EventIn(serial=s, type="HANDOVER_OFFER", actor="did:attacker", ts=base, to_actor="did:attacker2"))
+        return sign_event_api(EventIn(serial=s, type="HANDOVER_OFFER", actor="did:attacker", ts=base, to_actor="did:attacker2"), request=None)
     if attack == "tamper":
         import json as _j
         row = c.execute("SELECT rowid AS rid, raw FROM events WHERE serial=? ORDER BY rid LIMIT 1", (s,)).fetchone()
@@ -1050,12 +1125,16 @@ def redteam(attack: str, request: Request):
 def seed_demo(request: Request):
     require_local(request)
     from . import signer as _signer
+    from . import auth as _auth
     c = con()
     for did, role in (("did:maker1", "manufacturer"), ("did:transporter1", "transporter"),
                       ("did:retailer1", "retailer"), ("did:attacker", "transporter"),
-                      ("did:attacker2", "retailer")):
+                      ("did:attacker2", "retailer"),
+                      ("did:consumer1", "consumer"), ("did:consumer2", "consumer"),
+                      ("did:consumer3", "consumer")):
         c.execute("INSERT OR REPLACE INTO actors(did,pubkey,role,active) VALUES(?,?,?,1)",
                   (did, _signer.pubkey_hex(did), role))
+    _auth.seed_users(c, _auth.parse_password_env())
     c.commit()
     create_lot(LotIn(lot_id="LOT-DEMO-A", size=10, manufacturer="did:maker1"))
     return {"seeded": True, "signer": "ed25519 device-simulator holds demo keys"}
@@ -1076,7 +1155,7 @@ def seed_tree(request: Request):
 
     def _ev(serial, type, actor, to=None, ts=None):
         return sign_event_api(EventIn(serial=serial, type=type, actor=actor,
-                                      to_actor=to, ts=ts))
+                                      to_actor=to, ts=ts), request=None)
 
     base = int(time.time())
     tick = [base]

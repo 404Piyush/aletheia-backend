@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Trust Fabric · Act</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; background: #101418; color: #e8ecef; }
+  h1 { font-size: 20px; margin: 8px 0; }
+  .card { background: #1a2129; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  .row { display: flex; gap: 8px; margin: 8px 0; }
+  input, select, button { font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid #3a4653; }
+  input, select { background: #0d1117; color: #fff; flex: 1; min-width: 0; }
+  button { background: #2f81f7; color: #fff; border: none; font-weight: 600; flex: 1; }
+  button.ghost { background: #30363d; }
+  button.danger { background: #a40e26; }
+  button:disabled { opacity: .45; }
+  #log { white-space: pre-wrap; font-size: 13px; background: #0d1117; border-radius: 8px; padding: 8px; max-height: 220px; overflow-y: auto; }
+  .ok { color: #3fb950; } .bad { color: #f85149; } .mut { color: #d29922; }
+  video { width: 100%; border-radius: 8px; background: #000; }
+  .hint { font-size: 12px; color: #8b949e; }
+  #who { font-weight: 700; }
+</style>
+</head>
+<body>
+<h1>Trust Fabric · Act</h1>
+<div class="card" id="login-card">
+  <div id="who">Not logged in (consumer mode — verify + scan only)</div>
+  <div class="row">
+    <input id="user" placeholder="username (maker…)" autocomplete="username" />
+    <input id="pw" type="password" placeholder="password" autocomplete="current-password" />
+  </div>
+  <div class="row">
+    <button id="login-btn">Log in (actors)</button>
+    <button id="logout-btn" class="ghost">Log out</button>
+  </div>
+</div>
+<div class="card">
+  <div class="row">
+    <input id="serial" placeholder="Serial — scan or type" autocomplete="off" />
+    <button id="cam-btn" class="ghost" style="flex:.6">📷</button>
+  </div>
+  <video id="cam" playsinline hidden></video>
+  <div class="row">
+    <input id="loc" placeholder="scan location (GPS, or VPN egress if disclosed)" />
+    <button id="gps-btn" class="ghost" style="flex:.6">📍</button>
+  </div>
+  <div class="row">
+    <button id="b-scan">Scan</button>
+    <button id="b-offer" class="ghost">Offer</button>
+  </div>
+  <div class="row">
+    <button id="b-accept" class="ghost">Accept</button>
+    <button id="b-sell" class="danger">Sell</button>
+  </div>
+  <div class="row">
+    <input id="toactor" placeholder="offer to DID (for Offer)" />
+  </div>
+  <div class="row">
+    <button id="b-verdict" class="ghost">Check verdict</button>
+  </div>
+  <p class="hint">Offer/Accept/Sell need an actor login. Scan works anonymous.
+  Nodes below each receive every action (3-laptop demo).</p>
+</div>
+<div class="card">
+  <div class="row"><input id="nodes" placeholder="node URLs, comma separated" /></div>
+  <div class="row"><button id="save-nodes" class="ghost">Save nodes</button></div>
+</div>
+<div class="card"><div id="log"></div></div>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var log = function (msg, cls) {
+    var d = document.createElement("div");
+    if (cls) d.className = cls;
+    d.textContent = new Date().toISOString().slice(11, 19) + " " + msg;
+    $("log").prepend(d);
+  };
+  var nodes = function () {
+    var raw = (localStorage.getItem("tf_nodes") || "").trim();
+    if (!raw) return [location.origin];
+    return raw.split(",").map(function (s) { return s.trim().replace(/\/$/, ""); }).filter(Boolean);
+  };
+  $("nodes").value = localStorage.getItem("tf_nodes") || "";
+  $("save-nodes").onclick = function () {
+    localStorage.setItem("tf_nodes", $("serial") && $("nodes").value);
+    log("nodes: " + nodes().join(", "));
+  };
+  var post = function (path, body) {
+    var targets = nodes().map(function (base) {
+      return fetch(base + path, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {})
+      }).then(function (r) {
+        return r.json().then(function (j) { return { base: base, ok: r.ok, status: r.status, body: j }; })
+          .catch(function () { return { base: base, ok: r.ok, status: r.status, body: null }; });
+      }).catch(function (e) { return { base: base, ok: false, status: 0, body: String(e) }; });
+    });
+    return Promise.all(targets);
+  };
+  var show = function (label, results) {
+    results.forEach(function (r) {
+      var s = label + " @" + r.base.replace(/^https?:\/\//, "") + " -> " + r.status + " " +
+        JSON.stringify(r.body || "").slice(0, 160);
+      log(s, r.ok ? "ok" : "bad");
+    });
+  };
+  var me = function () {
+    fetch("/auth/me", { credentials: "include" }).then(function (r) { return r.json(); })
+      .then(function (j) {
+        $("who").textContent = j.anonymous
+          ? "Not logged in (consumer mode — verify + scan only)"
+          : "Logged in: " + j.username + " · " + j.did + " · " + j.role;
+      }).catch(function () { $("who").textContent = "backend unreachable"; });
+  };
+  $("login-btn").onclick = function () {
+    fetch("/auth/login", {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("user").value, password: $("pw").value })
+    }).then(function (r) {
+      log(r.ok ? "login ok" : "login FAILED (" + r.status + ")", r.ok ? "ok" : "bad");
+      $("pw").value = ""; me();
+    });
+  };
+  $("logout-btn").onclick = function () {
+    fetch("/auth/logout", { method: "POST", credentials: "include" }).then(me);
+  };
+  $("gps-btn").onclick = function () {
+    if (!navigator.geolocation) { log("no geolocation", "bad"); return; }
+    navigator.geolocation.getCurrentPosition(function (p) {
+      $("loc").value = p.coords.latitude.toFixed(3) + "," + p.coords.longitude.toFixed(3);
+      log("gps locked");
+    }, function () { log("gps denied — type location", "mut"); });
+  };
+  var coords = function () {
+    var m = ($("loc").value || "").split(",");
+    if (m.length === 2) {
+      var la = parseFloat(m[0]), lo = parseFloat(m[1]);
+      if (isFinite(la) && isFinite(lo)) return { lat: la, lon: lo };
+    }
+    return {};
+  };
+  var act = function (type, extra) {
+    var body = Object.assign({ serial: $("serial").value.trim(), type: type }, coords(), extra || {});
+    if (!body.serial) { log("serial required", "bad"); return; }
+    post("/events/sign", body).then(function (r) { show(type, r); });
+  };
+  $("b-scan").onclick = function () { act("SCAN"); };
+  $("b-offer").onclick = function () {
+    var to = $("toactor").value.trim();
+    if (!to) { log("offer needs a DID", "bad"); return; }
+    act("HANDOVER_OFFER", { to_actor: to });
+  };
+  $("b-accept").onclick = function () { act("HANDOVER_ACCEPT"); };
+  $("b-sell").onclick = function () { act("SOLD"); };
+  $("b-verdict").onclick = function () {
+    var s = $("serial").value.trim();
+    if (!s) return;
+    fetch("/products/" + encodeURIComponent(s) + "/verify", { credentials: "include" })
+      .then(function (r) { return r.json(); })
+      .then(function (v) {
+        var fails = (v.checks || []).filter(function (c) { return c.status === "fail"; })
+          .map(function (c) { return c.id; }).join(",");
+        log("verdict " + v.verdict + " risk " + v.risk_score + " [" + fails + "]",
+          v.verdict === "VERIFIED" ? "ok" : "mut");
+      }).catch(function (e) { log("verdict failed: " + e, "bad"); });
+  };
+  var stream = null;
+  $("cam-btn").onclick = function () {
+    var v = $("cam");
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; v.hidden = true; return; }
+    var done = function (text) {
+      $("serial").value = text; log("scanned: " + text, "ok");
+      if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; v.hidden = true; }
+    };
+    if ("BarcodeDetector" in window) {
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }).then(function (s) {
+        stream = s; v.hidden = false; v.srcObject = s; v.play();
+        var det = new BarcodeDetector({ formats: ["qr_code"] });
+        var tick = function () {
+          if (!stream) return;
+          det.detect(v).then(function (codes) {
+            if (codes.length) done(codes[0].rawValue);
+            else setTimeout(tick, 300);
+          }).catch(function () { setTimeout(tick, 500); });
+        };
+        tick();
+      }).catch(function () { log("camera denied — type serial", "bad"); });
+    } else { log("no BarcodeDetector — type serial", "bad"); }
+  };
+  me();
+})();
+</script>
+</body>
+</html>

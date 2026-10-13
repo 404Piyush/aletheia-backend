@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS converge_cases(
   serial TEXT PRIMARY KEY, case_id TEXT, ts INTEGER, last_status TEXT,
   handoff_id TEXT, incident_id TEXT
 );
+CREATE TABLE IF NOT EXISTS users(
+  username TEXT PRIMARY KEY, pw_hash TEXT, salt TEXT, did TEXT, role TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions(
+  token TEXT PRIMARY KEY, username TEXT, did TEXT, role TEXT, expiry INTEGER
+);
 """
 
 
