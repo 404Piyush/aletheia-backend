@@ -8,5 +8,7 @@ anchors.json
 converge_outbox.jsonl
 besu-qbft/data
 
-# secrets: chain validator key (dev-only; never commit real keys)
+# secrets: chain validator keys (dev-only; never commit real keys)
 besu-qbft/validator.key
+besu-qbft/validator2.key
+besu-qbft/validator3.key

@@ -99,3 +99,29 @@ def test_anonymous_scan_defaults_consumer(monkeypatch):
     assert r.status_code == 200, r.text
     v = client.get("/products/ACT-T-000001/verify").json()
     assert "R08" not in {c["id"] for c in v["checks"] if c["status"] == "fail"}
+
+
+def test_session_binds_actor_no_spoof(monkeypatch):
+    import backend.main as _main
+    monkeypatch.setattr(_main, "RBAC_OPEN", True)
+    c = app_con()
+    try:
+        for t in ("products", "events", "claims", "unknown_attempts"):
+            c.execute(f"DELETE FROM {t}")
+        c.commit()
+    finally:
+        c.close()
+    client.post("/auth/login", json={"username": "maker", "password": "maker123"})
+    r = client.post("/lots", json={"lot_id": "BIND-T", "size": 1,
+                                   "manufacturer": "did:maker1"})
+    assert r.status_code == 200, r.text
+    # logged in as maker but submitting as attacker: stored as maker
+    r = client.post("/events/sign", json={"serial": "BIND-T-000001", "type": "SCAN",
+                                          "actor": "did:attacker"})
+    assert r.status_code == 200, r.text
+    c = app_con()
+    try:
+        row = c.execute("SELECT actor FROM events WHERE serial='BIND-T-000001' AND type='SCAN'").fetchone()
+    finally:
+        c.close()
+    assert row["actor"] == "did:maker1", dict(row)
